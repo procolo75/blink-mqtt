@@ -1,0 +1,11 @@
+blinkpy>=0.25.0
+paho-mqtt<2.0
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+aiofiles
+python-dateutil
+python-slugify
+requests
+sortedcontainers
