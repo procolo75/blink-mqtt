@@ -198,7 +198,7 @@ The **Serial** field on each camera card contains the camera's unique identifier
 - HTTP `202` is now accepted as a 2FA trigger (in addition to `412`) — [blinkpy PR #1231](https://github.com/fronzbot/blinkpy/pull/1231)
 - `CookieJar(unsafe=True)` is required to preserve OAuth session cookies — [blinkpy PR #1229](https://github.com/fronzbot/blinkpy/pull/1229)
 
-**Token refresh** — On restart, the add-on calls `oauth_refresh_token()` directly with the saved `refresh_token` and `hardware_id`. No PKCE flow, no OTP. The token is valid for several weeks; when it expires a fresh login is required via the web UI.
+**Token refresh** — On restart, the add-on calls `oauth_refresh_token()` directly with the saved `refresh_token` and `hardware_id` (no PKCE flow, no OTP). It also refreshes the stored token expiry (`expiration_date` / `expires_in`) so blinkpy's `need_refresh()` doesn't fall back to the legacy password-grant login flow — which would otherwise fail in the headless add-on with `Login endpoint failed. Try again later.` The token is valid for several weeks; when it genuinely expires the add-on logs a clear message and a fresh login is required via the web UI.
 
 **Thumbnail caching** — Snapshot images are only re-published to MQTT when the thumbnail URL changes (or on the first poll), preventing unnecessary MQTT traffic.
 

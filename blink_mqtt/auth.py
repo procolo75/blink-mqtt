@@ -110,6 +110,14 @@ class AuthManager:
             blink.auth.token = token_data.get("access_token") or blink.auth.token
             if new_rt := token_data.get("refresh_token"):
                 blink.auth.refresh_token = new_rt
+            # Refresh the expiry too, using blinkpy's own formula. Otherwise the
+            # stale (already-expired) expiration_date from the saved file makes
+            # Auth.query() -> need_refresh() fire a second refresh via the legacy
+            # login flow, which fails headless with "Login endpoint failed".
+            expires_in = token_data.get("expires_in", 3600)
+            blink.auth.expires_in = expires_in
+            blink.auth.expiration_date = time.time() + expires_in
+            blink.auth.is_errored = False
             blink.setup_urls()
             await blink.get_homescreen()
             ok = await blink.setup_post_verify()
@@ -124,8 +132,16 @@ class AuthManager:
             _LOGGER.warning("setup_post_verify() returned False during restore")
             await _close(blink)
             return False
+        except (LoginError, TokenRefreshFailed):
+            _LOGGER.info(
+                "Refresh token expired or rejected — login again via the web UI"
+            )
+            await _close(blink)
+            return False
         except Exception as e:
-            _LOGGER.warning("Restore failed: %s", e)
+            # repr() so exceptions without a message (e.g. TokenRefreshFailed)
+            # are still identifiable by type instead of logging an empty string.
+            _LOGGER.warning("Restore failed: %s", repr(e))
             await _close(blink)
             return False
 
