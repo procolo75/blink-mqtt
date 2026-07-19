@@ -5,6 +5,15 @@ All notable changes to this add-on are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-07-19
+
+### Fixed
+- **Add-on repository structure.** Added a root `repository.yaml` and moved the
+  add-on into a `blink-mqtt/` subfolder so Home Assistant can discover it when
+  the GitHub repo is added as an add-on repository. Previously the add-on files
+  lived at the repo root with no `repository.yaml`, so HA showed no add-on to
+  install.
+
 ## [1.1.0] - 2026-07-19
 
 ### Fixed
@@ -31,5 +40,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Runtime patches for blinkpy 0.25.x (HTTP 202 as 2FA trigger; unsafe
   `CookieJar` for OAuth session cookies).
 
+[1.1.1]: https://github.com/procolo75/blink-mqtt/releases/tag/v1.1.1
 [1.1.0]: https://github.com/procolo75/blink-mqtt/releases/tag/v1.1.0
 [1.0.0]: https://github.com/procolo75/blink-mqtt/releases/tag/v1.0.0

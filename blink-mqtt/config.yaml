@@ -1,6 +1,6 @@
 name: Blink MQTT
 description: Connect Blink cameras to Home Assistant via MQTT with auto-discovery
-version: "1.1.0"
+version: "1.1.1"
 slug: blink_mqtt
 startup: application
 init: false

@@ -35,7 +35,7 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 
 1. In Home Assistant, go to **Settings → Add-ons → Add-on Store**
 2. Click the three-dot menu (⋮) → **Repositories**
-3. Add this repository URL and click **Add**
+3. Add the repository URL `https://github.com/procolo75/blink-mqtt` and click **Add**
 4. Find **Blink MQTT** in the list and click **Install**
 
 ---
