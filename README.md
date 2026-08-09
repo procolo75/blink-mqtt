@@ -17,7 +17,7 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 - **Snapshot** camera entity per camera (live JPEG image)
 - **Arm/Disarm** switch per sync module
 - **Snapshot trigger** command per camera (via MQTT or web UI)
-- **Credential persistence** — refresh token saved to `/data/blink_credentials.json`; no re-login needed on restart until the token expires
+- **Credential persistence** — refresh token saved to `/data/blink_credentials.json` and kept up to date on every renewal; no re-login needed on restart until the token expires
 - **Web UI** (HA Ingress) for login, 2FA OTP, and dashboard
 - Supports **BlinkCamera**, **BlinkCameraMini**, and **BlinkDoorbell**
 
@@ -107,7 +107,7 @@ All topics use the `blink` prefix. State topics are **retained** unless noted ot
 |---|---|
 | `blink/availability` | `online` / `offline` |
 
-`offline` is sent as a Last Will Testament (LWT) so HA marks all entities unavailable if the add-on stops unexpectedly.
+`offline` is sent as a Last Will Testament (LWT) so HA marks all entities unavailable if the add-on stops unexpectedly. It is also published when the add-on is not authenticated, after a logout, and when the Blink session is lost and a new login is required.
 
 ---
 
@@ -185,7 +185,7 @@ The **Serial** field on each camera card contains the camera's unique identifier
                             └───────────────────────┘
 ```
 
-- **AuthManager** — state machine (`NOT_AUTHENTICATED → WAITING_OTP → AUTHENTICATED`); persists credentials to `/data/blink_credentials.json`
+- **AuthManager** — state machine (`NOT_AUTHENTICATED → WAITING_OTP → AUTHENTICATED`, plus `ERROR` when a session is lost); persists credentials to `/data/blink_credentials.json` and owns the token-refresh patch
 - **Bridge** — runs two concurrent async loops: polling Blink API and processing MQTT commands
 - **MQTTClient** — paho-mqtt wrapper; publishes HA discovery configs and state topics; routes incoming commands to the bridge via an asyncio queue
 - **FastAPI web UI** — served on port 8765 via HA Ingress; handles login/OTP/logout and exposes snapshot/arm actions
@@ -194,11 +194,16 @@ The **Serial** field on each camera card contains the camera's unique identifier
 
 ## Technical Notes
 
-**blinkpy 0.25.x patches** — Two upstream bugs are patched at runtime:
+**blinkpy patches** — `blinkpy` is pinned to **0.25.5** because three upstream issues are patched at runtime against that exact release:
 - HTTP `202` is now accepted as a 2FA trigger (in addition to `412`) — [blinkpy PR #1231](https://github.com/fronzbot/blinkpy/pull/1231)
 - `CookieJar(unsafe=True)` is required to preserve OAuth session cookies — [blinkpy PR #1229](https://github.com/fronzbot/blinkpy/pull/1229)
+- `Auth.refresh_tokens()` is redirected to the **OAuth v2** endpoint (see below)
 
-**Token refresh** — On restart, the add-on calls `oauth_refresh_token()` directly with the saved `refresh_token` and `hardware_id` (no PKCE flow, no OTP). It also refreshes the stored token expiry (`expiration_date` / `expires_in`) so blinkpy's `need_refresh()` doesn't fall back to the legacy password-grant login flow — which would otherwise fail in the headless add-on with `Login endpoint failed. Try again later.` The token is valid for several weeks; when it genuinely expires the add-on logs a clear message and a fresh login is required via the web UI.
+**Token refresh** — The add-on authenticates through the OAuth v2 PKCE flow (`client_id = "ios"`). blinkpy, however, renews the expiring access token by itself inside `Auth.query()`, and its `refresh_tokens()` uses the **legacy v1 grant** (`client_id = "android"`): a v2 refresh token is never valid for the v1 client, so about an hour after login every request failed with `Login endpoint failed. Try again later.` The add-on therefore patches `Auth.refresh_tokens()` to call `oauth_refresh_token()` (v2) instead, serialised by a lock — the poll loop and a web command can reach `query()` at the same time, and Blink rotates refresh tokens, so two concurrent refreshes would present an already-consumed token. Every successful refresh rewrites `/data/blink_credentials.json`, keeping the saved token in sync with the rotation.
+
+The same v2 endpoint is used to restore the session on restart (no PKCE flow, no OTP). Refresh tokens last several weeks; when one is genuinely revoked or expired the add-on stops the bridge, marks the entities unavailable and shows the login form with a clear message — see below.
+
+**Session loss handling** — A single failed refresh can mean either a revoked token or a Blink server hiccup, so the add-on tolerates **3 consecutive authentication failures** (≈90 s at the default poll interval) before declaring the session dead. Until then it keeps retrying; after that it stops the bridge, publishes `offline` on `blink/availability` and switches the web UI to the login form. Blink API errors in the web UI (snapshot, arm/disarm) are reported as a message on the dashboard — they never surface as an `Internal Server Error`.
 
 **Thumbnail caching** — Snapshot images are only re-published to MQTT when the thumbnail URL changes (or on the first poll), preventing unnecessary MQTT traffic.
 

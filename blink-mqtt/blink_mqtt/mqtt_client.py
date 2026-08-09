@@ -16,6 +16,8 @@ class MQTTClient:
     def __init__(self, host, port, user, password, loop: asyncio.AbstractEventLoop):
         self._loop = loop
         self.command_queue: asyncio.Queue = asyncio.Queue()
+        # Entities stay unavailable until the bridge has a working Blink session.
+        self._available = False
 
         self._client = mqtt.Client()
         if user:
@@ -34,7 +36,11 @@ class MQTTClient:
     def _on_connect(self, client, userdata, flags, rc):
         if rc == 0:
             _LOGGER.info("MQTT connected")
-            client.publish(_AVAIL, "online", retain=True)
+            # Republish the *current* availability: a reconnect must not bring
+            # entities back online while the Blink session is dead.
+            client.publish(
+                _AVAIL, "online" if self._available else "offline", retain=True
+            )
             client.subscribe(f"{_STATE}/sync/+/armed/set")
             client.subscribe(f"{_STATE}/cameras/+/snapshot/trigger")
         else:
@@ -58,6 +64,11 @@ class MQTTClient:
             self._client.publish(topic, payload, retain=retain)
         else:
             self._client.publish(topic, str(payload), retain=retain)
+
+    def set_available(self, available: bool):
+        """Flip the global availability topic used by every discovery config."""
+        self._available = available
+        self._pub(_AVAIL, "online" if available else "offline", retain=True)
 
     def publish_discovery(self, blink):
         for cam in blink.cameras.values():
@@ -216,6 +227,6 @@ class MQTTClient:
         self._pub(f"{_STATE}/sync/{nid}/armed/state", "ON" if sync.arm is True else "OFF", retain=True)
 
     def stop(self):
-        self._pub(_AVAIL, "offline", retain=True)
+        self.set_available(False)
         self._client.loop_stop()
         self._client.disconnect()

@@ -178,6 +178,8 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
   <!-- ── DASHBOARD ── -->
   {% if state == "authenticated" %}
 
+  {% if error %}<div class="alert alert-err" style="margin-bottom:1rem;">{{ error }}</div>{% endif %}
+
   <!-- Sync modules -->
   {% if syncs %}
   <div class="card">

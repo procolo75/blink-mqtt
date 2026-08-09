@@ -4,21 +4,26 @@ import logging
 from slugify import slugify
 
 from . import config
+from .auth import AUTH_ERRORS, AuthManager
 from .mqtt_client import MQTTClient
 
 _LOGGER = logging.getLogger(__name__)
 
 
 class Bridge:
-    def __init__(self, blink, mqtt: MQTTClient):
-        self._blink = blink
+    def __init__(self, auth_manager: AuthManager, mqtt: MQTTClient,
+                 bridge_event: asyncio.Event):
+        self._auth = auth_manager
+        self._blink = auth_manager.blink
         self._mqtt = mqtt
+        self._bridge_event = bridge_event
         self._running = False
         # Track thumbnail URLs so we only push new images to MQTT when they change.
         self._thumbnail_cache: dict[str, str | None] = {}
 
     async def run(self):
         self._running = True
+        self._mqtt.set_available(True)
         self._mqtt.publish_discovery(self._blink)
         await asyncio.gather(
             self._poll_loop(),
@@ -27,6 +32,18 @@ class Bridge:
 
     def stop(self):
         self._running = False
+
+    # ------------------------------------------------------------------
+
+    def _note_auth_error(self, e: Exception) -> bool:
+        """Report an auth error; shut the bridge down if the session is dead."""
+        if not self._auth.note_auth_failure(e):
+            return False
+        self._running = False
+        # Wake _supervise(), which cancels this task and (blink being None now)
+        # goes back to waiting for a login from the web UI.
+        self._bridge_event.set()
+        return True
 
     # ------------------------------------------------------------------
 
@@ -47,8 +64,13 @@ class Bridge:
                 for sync in self._blink.sync.values():
                     self._mqtt.publish_sync(sync)
                 first_run = False
+                self._auth.note_auth_success()
+            except AUTH_ERRORS as e:
+                if self._note_auth_error(e):
+                    return
             except Exception as e:
-                _LOGGER.error("Poll error: %s", e)
+                # repr() so exceptions without a message stay identifiable.
+                _LOGGER.error("Poll error: %s", repr(e))
             await asyncio.sleep(config.POLL_INTERVAL)
 
     async def _command_loop(self):
@@ -60,8 +82,11 @@ class Bridge:
                 await self._handle_command(topic, payload)
             except asyncio.TimeoutError:
                 pass
+            except AUTH_ERRORS as e:
+                if self._note_auth_error(e):
+                    return
             except Exception as e:
-                _LOGGER.error("Command error: %s", e)
+                _LOGGER.error("Command error: %s", repr(e))
 
     async def _handle_command(self, topic: str, payload: str):
         parts = topic.split("/")

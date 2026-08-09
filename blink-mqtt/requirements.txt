@@ -1,4 +1,6 @@
-blinkpy>=0.25.0
+# Pinned: blink_mqtt/auth.py patches blinkpy internals (2FA HTTP 202, unsafe
+# CookieJar, OAuth v2 token refresh) that are verified against this exact release.
+blinkpy==0.25.5
 paho-mqtt<2.0
 fastapi
 uvicorn[standard]

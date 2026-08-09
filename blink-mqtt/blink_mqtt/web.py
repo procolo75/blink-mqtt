@@ -1,13 +1,14 @@
 import asyncio
 import logging
 import time
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse, Response
 from fastapi.templating import Jinja2Templates
 from slugify import slugify
 
-from .auth import AuthManager, AuthState
+from .auth import AUTH_ERRORS, AuthManager, AuthState
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -21,6 +22,19 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
 
     def _base(request: Request) -> str:
         return request.headers.get("X-Ingress-Path", "").rstrip("/")
+
+    @asynccontextmanager
+    async def _blink_errors(action: str):
+        """Turn Blink API failures into a UI message instead of an HTTP 500."""
+        try:
+            yield
+        except AUTH_ERRORS as e:
+            _LOGGER.warning("%s failed: %s", action, repr(e))
+            if not auth_manager.note_auth_failure(e):
+                auth_manager.error_msg = f"{action} failed — session refreshing, retry"
+        except Exception as e:
+            _LOGGER.error("%s failed: %s", action, repr(e))
+            auth_manager.error_msg = f"{action} failed: {e}"
 
     def _cam_list():
         if not auth_manager.blink:
@@ -96,6 +110,12 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
     @app.post("/logout")
     async def logout(request: Request):
         auth_manager.reset()
+        # Stop the bridge and mark the entities unavailable — otherwise it keeps
+        # polling with the session the user just dropped.
+        mqtt = getattr(request.app.state, "mqtt", None)
+        if mqtt:
+            mqtt.set_available(False)
+        bridge_event.set()
         return RedirectResponse(url=f"{_base(request)}/", status_code=303)
 
     @app.get("/image/{camera_name:path}")
@@ -112,20 +132,22 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
         blink = auth_manager.blink
         if blink and camera_name in blink.cameras:
             cam = blink.cameras[camera_name]
-            old_url = cam.thumbnail
-            _LOGGER.info("Snapshot %s — thumbnail before: %s", camera_name, old_url)
-            ret = await cam.snap_picture()
-            _LOGGER.info("Snapshot %s — snap_picture() returned: %s", camera_name, ret)
-            # wait_for_command() inside snap_picture() handles command completion,
-            # but image upload to Blink CDN may still be in progress
-            await asyncio.sleep(_SNAP_WAIT)
-            # force_cache=True: re-download image even if thumbnail URL didn't change
-            # (BlinkCameraMini often reuses the same URL)
-            await blink.refresh(force=True, force_cache=True)
-            _LOGGER.info("Snapshot %s — thumbnail after: %s", camera_name, cam.thumbnail)
-            mqtt = getattr(request.app.state, "mqtt", None)
-            if mqtt:
-                mqtt.publish_camera(cam, publish_image=True)
+            async with _blink_errors("Snapshot"):
+                old_url = cam.thumbnail
+                _LOGGER.info("Snapshot %s — thumbnail before: %s", camera_name, old_url)
+                ret = await cam.snap_picture()
+                _LOGGER.info("Snapshot %s — snap_picture() returned: %s", camera_name, ret)
+                # wait_for_command() inside snap_picture() handles command completion,
+                # but image upload to Blink CDN may still be in progress
+                await asyncio.sleep(_SNAP_WAIT)
+                # force_cache=True: re-download image even if thumbnail URL didn't change
+                # (BlinkCameraMini often reuses the same URL)
+                await blink.refresh(force=True, force_cache=True)
+                _LOGGER.info("Snapshot %s — thumbnail after: %s", camera_name, cam.thumbnail)
+                mqtt = getattr(request.app.state, "mqtt", None)
+                if mqtt:
+                    mqtt.publish_camera(cam, publish_image=True)
+                auth_manager.note_auth_success()
         return RedirectResponse(url=f"{_base(request)}/", status_code=303)
 
     @app.post("/arm/{nid}/{value}")
@@ -134,15 +156,17 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
         if blink:
             for sync in blink.sync.values():
                 if str(sync.network_id) == nid:
-                    await sync.async_arm(value == "on")
-                    # async_arm() sends the command but does NOT update the local
-                    # network_info dict. Force a full refresh so sync.arm reflects
-                    # the new state before we redirect and re-render the page.
-                    await asyncio.sleep(1.0)
-                    await blink.refresh(force=True)
-                    mqtt = getattr(request.app.state, "mqtt", None)
-                    if mqtt:
-                        mqtt.publish_sync(sync)
+                    async with _blink_errors("Arm"):
+                        await sync.async_arm(value == "on")
+                        # async_arm() sends the command but does NOT update the local
+                        # network_info dict. Force a full refresh so sync.arm reflects
+                        # the new state before we redirect and re-render the page.
+                        await asyncio.sleep(1.0)
+                        await blink.refresh(force=True)
+                        mqtt = getattr(request.app.state, "mqtt", None)
+                        if mqtt:
+                            mqtt.publish_sync(sync)
+                        auth_manager.note_auth_success()
                     break
         return RedirectResponse(url=f"{_base(request)}/", status_code=303)
 

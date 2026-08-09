@@ -30,6 +30,13 @@ async def main():
         loop=loop,
     )
 
+    def _session_dead():
+        """Blink session lost: mark HA entities unavailable and stop the bridge."""
+        mqtt.set_available(False)
+        bridge_event.set()
+
+    auth_manager.on_session_dead = _session_dead
+
     app = create_app(auth_manager, bridge_event)
     app.state.mqtt = mqtt
 
@@ -69,9 +76,10 @@ async def _supervise(auth_manager: AuthManager, mqtt: MQTTClient, bridge_event: 
                 pass
 
         if auth_manager.blink:
-            bridge = Bridge(auth_manager.blink, mqtt)
+            bridge = Bridge(auth_manager, mqtt, bridge_event)
             bridge_task = asyncio.create_task(_run_bridge(bridge))
         else:
+            mqtt.set_available(False)
             _LOGGER.info("Not authenticated — waiting for login via web UI")
 
 

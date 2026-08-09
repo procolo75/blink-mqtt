@@ -1,6 +1,8 @@
+import asyncio
 import json
 import logging
 import time
+from collections.abc import Callable
 from enum import Enum
 
 import aiohttp
@@ -8,11 +10,26 @@ from aiohttp import CookieJar
 
 import blinkpy.api as _bapi
 from blinkpy.blinkpy import Blink
-from blinkpy.auth import Auth, BlinkTwoFARequiredError, LoginError, TokenRefreshFailed
+from blinkpy.auth import (
+    Auth,
+    BlinkTwoFARequiredError,
+    LoginError,
+    TokenRefreshFailed,
+    UnauthorizedError,
+)
 from blinkpy.helpers.constants import OAUTH_USER_AGENT, OAUTH_SIGNIN_URL
 
 _LOGGER = logging.getLogger(__name__)
 CREDS_FILE = "/data/blink_credentials.json"
+
+# Blink API errors that mean "this session may be gone" — see note_auth_failure().
+AUTH_ERRORS = (TokenRefreshFailed, LoginError, UnauthorizedError)
+
+# Consecutive auth failures tolerated before the session is declared dead.
+# oauth_refresh_token() returns None for *any* non-200, so a single failure
+# can't tell "token revoked" from "Blink server hiccup" — and dropping the
+# session means the user has to redo the whole email+password+OTP login.
+_MAX_AUTH_FAILURES = 3
 
 # ── Patch blinkpy v0.25.5 bugs (PRs #1229 and #1231 not yet merged) ──────────
 #
@@ -41,6 +58,67 @@ async def _oauth_signin_fixed(auth, email, password, csrf_token):
 
 
 _bapi.oauth_signin = _oauth_signin_fixed
+
+
+def _apply_token_data(auth: Auth, token_data: dict) -> None:
+    """Copy an OAuth v2 token response onto an Auth object.
+
+    Mirrors blinkpy's own Auth._process_token_data() but never re-fetches the
+    tier info: host/region/account already come from the saved credentials.
+    Updating the expiry matters — a stale expiration_date makes need_refresh()
+    fire another refresh on the very next request.
+    """
+    auth.token = token_data.get("access_token") or auth.token
+    if new_rt := token_data.get("refresh_token"):
+        auth.refresh_token = new_rt
+    expires_in = token_data.get("expires_in", 3600)
+    auth.expires_in = expires_in
+    auth.expiration_date = time.time() + expires_in
+    auth.is_errored = False
+
+
+# Bug 3: blinkpy refreshes expiring tokens itself, inside Auth.query():
+#   query() -> need_refresh() -> refresh_tokens(refresh=True) -> login(refresh=True)
+# and login() uses the *legacy v1* grant (OAUTH_CLIENT_ID = "android"). Our
+# tokens come from the OAuth v2 PKCE flow (OAUTH_V2_CLIENT_ID = "ios"), so that
+# refresh is always rejected -> LoginError -> TokenRefreshFailed, roughly an
+# hour after login. Route the refresh through the v2 endpoint instead.
+# query() is the only caller of refresh_tokens() in the whole library, so this
+# single patch covers the bridge, the web UI, snapshots and arm/disarm.
+
+_orig_refresh_tokens = Auth.refresh_tokens
+
+
+async def _refresh_tokens_v2(self, refresh=False):
+    if not (refresh and self.refresh_token and self.hardware_id):
+        return await _orig_refresh_tokens(self, refresh=refresh)
+
+    # The poll loop and a web command can hit query() at the same time, and
+    # Blink rotates refresh tokens: a second, concurrent refresh would present
+    # an already-consumed token and kill the session.
+    lock = self.__dict__.setdefault("_bm_refresh_lock", asyncio.Lock())
+    async with lock:
+        if not self.need_refresh():
+            # Another task refreshed while we waited for the lock.
+            return True
+        token_data = await _bapi.oauth_refresh_token(
+            self, self.refresh_token, self.hardware_id
+        )
+        if not token_data:
+            self.is_errored = True
+            # Always carry a message: blinkpy raises TokenRefreshFailed bare,
+            # which logs as an empty string.
+            raise TokenRefreshFailed("refresh token rejected by Blink")
+        _apply_token_data(self, token_data)
+        _LOGGER.info("Access token refreshed (OAuth v2)")
+
+    # Persist the rotated refresh token outside the lock — the hook does I/O.
+    if hook := getattr(self, "_bm_on_refresh", None):
+        await hook()
+    return True
+
+
+Auth.refresh_tokens = _refresh_tokens_v2
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -78,6 +156,10 @@ class AuthManager:
         self.state = AuthState.NOT_AUTHENTICATED
         self.blink: Blink | None = None
         self.error_msg = ""
+        self._auth_failures = 0
+        # Set by main(): called when the Blink session is declared dead, to mark
+        # the MQTT entities unavailable and stop the bridge.
+        self.on_session_dead: Callable[[], None] | None = None
 
     async def restore(self) -> bool:
         """Restore session using the saved refresh_token — no PKCE, no OTP."""
@@ -107,27 +189,16 @@ class AuthManager:
                 await _close(blink)
                 return False
 
-            blink.auth.token = token_data.get("access_token") or blink.auth.token
-            if new_rt := token_data.get("refresh_token"):
-                blink.auth.refresh_token = new_rt
-            # Refresh the expiry too, using blinkpy's own formula. Otherwise the
-            # stale (already-expired) expiration_date from the saved file makes
-            # Auth.query() -> need_refresh() fire a second refresh via the legacy
-            # login flow, which fails headless with "Login endpoint failed".
-            expires_in = token_data.get("expires_in", 3600)
-            blink.auth.expires_in = expires_in
-            blink.auth.expiration_date = time.time() + expires_in
-            blink.auth.is_errored = False
+            _apply_token_data(blink.auth, token_data)
             blink.setup_urls()
             await blink.get_homescreen()
             ok = await blink.setup_post_verify()
             if ok:
                 # Mirror what blink.start() does to avoid last_refresh=None errors
                 blink.last_refresh = int(time.time() - blink.refresh_rate * 1.05)
-                self.blink = blink
-                self.state = AuthState.AUTHENTICATED
+                self._adopt(blink)
                 _LOGGER.info("Session restored via refresh_token")
-                await self._save()
+                await self._save(blink)
                 return True
             _LOGGER.warning("setup_post_verify() returned False during restore")
             await _close(blink)
@@ -158,10 +229,8 @@ class AuthManager:
         try:
             ok = await blink.start()
             if ok:
-                self.blink = blink
-                self.state = AuthState.AUTHENTICATED
-                self.error_msg = ""
-                await self._save()
+                self._adopt(blink)
+                await self._save(blink)
                 return True
             await _close(blink)
             self.error_msg = "Login failed — check email and password"
@@ -185,8 +254,7 @@ class AuthManager:
         try:
             ok = await self.blink.send_2fa_code(otp.strip())
             if ok:
-                self.state = AuthState.AUTHENTICATED
-                self.error_msg = ""
+                self._adopt(self.blink)
                 await self._save()
                 return True
             self.error_msg = "2FA verification failed"
@@ -201,11 +269,58 @@ class AuthManager:
         self.blink = None
         self.state = AuthState.NOT_AUTHENTICATED
         self.error_msg = ""
+        self._auth_failures = 0
 
-    async def _save(self):
+    def _adopt(self, blink: Blink):
+        """Mark a freshly authenticated Blink instance as the live session."""
+        self.blink = blink
+        self.state = AuthState.AUTHENTICATED
+        self.error_msg = ""
+        self._auth_failures = 0
+        # Persist the rotated refresh token every time blinkpy refreshes it,
+        # otherwise the saved file keeps a token Blink has already replaced.
+        blink.auth._bm_on_refresh = self._save
+
+    def note_auth_success(self):
+        self._auth_failures = 0
+        if self.state is AuthState.AUTHENTICATED:
+            # Clear any transient error still shown on the dashboard.
+            self.error_msg = ""
+
+    def note_auth_failure(self, exc: Exception) -> bool:
+        """Record an auth failure; drop the session after too many in a row.
+
+        Returns True when the session was declared dead (caller should stop
+        using self.blink).
+        """
+        self._auth_failures += 1
+        if self._auth_failures < _MAX_AUTH_FAILURES:
+            _LOGGER.warning(
+                "Auth failure %s/%s: %s",
+                self._auth_failures,
+                _MAX_AUTH_FAILURES,
+                repr(exc),
+            )
+            return False
+
+        _LOGGER.error("Session lost after %s auth failures: %s",
+                      self._auth_failures, repr(exc))
+        blink, self.blink = self.blink, None
+        self.state = AuthState.ERROR
+        self.error_msg = "Session expired — please sign in again"
+        if blink:
+            asyncio.create_task(_close(blink))
+        if self.on_session_dead:
+            self.on_session_dead()
+        return True
+
+    async def _save(self, blink: Blink | None = None):
+        blink = blink or self.blink
+        if not blink:
+            return
         try:
             with open(CREDS_FILE, "w") as f:
-                json.dump(self.blink.auth.login_attributes, f)
+                json.dump(blink.auth.login_attributes, f)
             _LOGGER.debug("Credentials saved to %s", CREDS_FILE)
         except Exception as e:
             _LOGGER.error("Failed to save credentials: %s", e)
