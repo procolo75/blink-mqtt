@@ -59,11 +59,11 @@ class MQTTClient:
     # public helpers
     # ------------------------------------------------------------------
 
-    def _pub(self, topic: str, payload, retain: bool = False):
+    def _pub(self, topic: str, payload, retain: bool = False, qos: int = 0):
         if isinstance(payload, (bytes, bytearray)):
-            self._client.publish(topic, payload, retain=retain)
+            self._client.publish(topic, payload, qos=qos, retain=retain)
         else:
-            self._client.publish(topic, str(payload), retain=retain)
+            self._client.publish(topic, str(payload), qos=qos, retain=retain)
 
     def set_available(self, available: bool):
         """Flip the global availability topic used by every discovery config."""
@@ -206,6 +206,8 @@ class MQTTClient:
         serial = cam.serial or slugify(cam.name)
         base = f"{_STATE}/cameras/{serial}"
 
+        # Display name for consumers that caption media (e.g. JARVIS Telegram).
+        self._pub(f"{base}/name", cam.name, retain=True)
         self._pub(f"{base}/motion/state", "ON" if cam.motion_detected is True else "OFF", retain=True)
         # Use sync module arm state — motion_enabled is an individual camera setting
         # that does not change when the sync module is armed/disarmed.
@@ -220,6 +222,18 @@ class MQTTClient:
             self._pub(f"{base}/wifi/state", cam.wifi_strength, retain=True)
         if publish_image and cam.image_from_cache:
             self._pub(f"{base}/snapshot", cam.image_from_cache)
+
+    def publish_motion_event(self, cam, image: bytes | None, clip: bytes | None):
+        """One motion clip: snapshot first, then the MP4 (never retained, QoS 1).
+
+        blink/cameras/{serial}/event/snapshot — JPEG bytes
+        blink/cameras/{serial}/event/clip     — MP4 bytes (~1-3 MB for 10 s)
+        """
+        base = f"{_STATE}/cameras/{cam.serial or slugify(cam.name)}/event"
+        if image:
+            self._pub(f"{base}/snapshot", image, qos=1)
+        if clip:
+            self._pub(f"{base}/clip", clip, qos=1)
 
     def publish_sync(self, sync):
         nid = str(sync.network_id)

@@ -20,6 +20,8 @@ class Bridge:
         self._running = False
         # Track thumbnail URLs so we only push new images to MQTT when they change.
         self._thumbnail_cache: dict[str, str | None] = {}
+        # Clip timestamps already seen in cam.recent_clips, per camera serial.
+        self._seen_clips: dict[str, set[str]] = {}
 
     async def run(self):
         self._running = True
@@ -61,6 +63,7 @@ class Bridge:
                     # Always publish sensor data; publish image only when it changed
                     # or on the very first run (so HA gets an initial value).
                     self._mqtt.publish_camera(cam, publish_image=(image_changed or first_run))
+                    await self._check_motion_clip(cam, first_run)
                 for sync in self._blink.sync.values():
                     self._mqtt.publish_sync(sync)
                 first_run = False
@@ -72,6 +75,54 @@ class Bridge:
                 # repr() so exceptions without a message stay identifiable.
                 _LOGGER.error("Poll error: %s", repr(e))
             await asyncio.sleep(config.POLL_INTERVAL)
+
+    async def _check_motion_clip(self, cam, first_run: bool):
+        """Publish snapshot + clip once for every new entry in cam.recent_clips.
+
+        recent_clips is blinkpy's own list of motion clips from the last hour
+        (the one save_recent_clips() uses), filled on every refresh() — also
+        with Sync Module USB storage and no subscription, where blinkpy lists a
+        clip once its recording has finished and has the sync module upload it.
+        It is the reliable signal: last_record / motion_detected are not, e.g.
+        for Mini cameras, which blinkpy models as their own sync-less "sync".
+        The first poll only seeds: clips from before startup are not re-sent.
+        """
+        serial  = cam.serial or slugify(cam.name)
+        clips   = {c["time"]: c["clip"] for c in (cam.recent_clips or [])
+                   if c.get("time") and c.get("clip")}
+        seen    = self._seen_clips.get(serial)
+        # recent_clips expires after an hour, so `seen` stays bounded.
+        self._seen_clips[serial] = set(clips)
+        if first_run or seen is None:
+            return
+
+        for when in sorted(set(clips) - seen):
+            url  = clips[when]
+            clip = cam.video_from_cache if url == cam.clip else None
+            if not _looks_like_mp4(clip):
+                clip = await self._download_clip(cam, url)
+            self._mqtt.publish_motion_event(cam, cam.image_from_cache, clip)
+            _LOGGER.info("Motion clip %s (%s): %s", cam.name, when,
+                         f"{len(clip) // 1024} KB" if clip else "video not available")
+
+    async def _download_clip(self, cam, url: str) -> bytes | None:
+        try:
+            resp = await cam.get_video_clip(url)
+            if resp is None or resp.status != 200:
+                _LOGGER.warning("Clip download for %s: HTTP %s", cam.name,
+                                getattr(resp, "status", None))
+                return None
+            data = await resp.read()
+        except AUTH_ERRORS:
+            raise
+        except Exception as e:
+            _LOGGER.warning("Clip download failed for %s: %s", cam.name, repr(e))
+            return None
+        # Never forward an error body (JSON/HTML) as a video.
+        if not _looks_like_mp4(data):
+            _LOGGER.warning("Clip download for %s: not an MP4 (%d bytes)", cam.name, len(data))
+            return None
+        return data
 
     async def _command_loop(self):
         while self._running:
@@ -124,3 +175,8 @@ class Bridge:
                 self._mqtt.publish_camera(cam, publish_image=True)
                 return
         _LOGGER.warning("Camera serial=%s not found", serial)
+
+
+def _looks_like_mp4(data) -> bool:
+    """MP4/ISO-BMFF files carry the 'ftyp' box tag at bytes 4..8."""
+    return isinstance(data, (bytes, bytearray)) and data[4:8] == b"ftyp"

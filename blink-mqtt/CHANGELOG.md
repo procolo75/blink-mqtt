@@ -5,6 +5,31 @@ All notable changes to this add-on are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-11-14
+
+### Fixed
+- **Motion events were never published.** 1.3.0 detected a new clip from
+  `cam.last_record` + `cam.motion_detected`, which blinkpy does not keep in step —
+  notably for Mini cameras, which it models as their own sync-less module — so a
+  clip found on the USB storage produced no event. Detection now follows
+  `cam.recent_clips`, blinkpy's own list of the last hour's clips (the one
+  `save_recent_clips()` uses), and each new entry is downloaded from its own URL.
+  The log line is now `Motion clip <name> (<time>): <n> KB`; a failed download
+  logs the HTTP status or why the body was rejected.
+
+## [1.3.0] - 2026-11-14
+
+### Added
+- **Motion events with photo and video.** For every new motion clip the add-on
+  publishes `blink/cameras/{serial}/event/snapshot` (JPEG) and then
+  `blink/cameras/{serial}/event/clip` (MP4), non-retained, QoS 1. Works with
+  Sync Module USB local storage (no subscription): the clip is the one blinkpy
+  already downloads during the poll; if that cache is empty it is fetched once,
+  and an error body is never published as a video (MP4 `ftyp` check). Clips
+  recorded before startup are not re-sent.
+- `blink/cameras/{serial}/name` (retained) — camera display name, used by
+  consumers to caption media.
+
 ## [1.2.0] - 2026-08-09
 
 ### Fixed
