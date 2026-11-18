@@ -77,7 +77,7 @@ class Bridge:
             await asyncio.sleep(config.POLL_INTERVAL)
 
     async def _check_motion_clip(self, cam, first_run: bool):
-        """Publish snapshot + clip once for every new entry in cam.recent_clips.
+        """Publish the clip once for every new entry in cam.recent_clips.
 
         recent_clips is blinkpy's own list of motion clips from the last hour
         (the one save_recent_clips() uses), filled on every refresh() — also
@@ -101,9 +101,12 @@ class Bridge:
             clip = cam.video_from_cache if url == cam.clip else None
             if not _looks_like_mp4(clip):
                 clip = await self._download_clip(cam, url)
-            self._mqtt.publish_motion_event(cam, cam.image_from_cache, clip)
-            _LOGGER.info("Motion clip %s (%s): %s", cam.name, when,
-                         f"{len(clip) // 1024} KB" if clip else "video not available")
+            if not clip:
+                _LOGGER.warning("Motion clip %s (%s): video not available, nothing published",
+                                cam.name, when)
+                continue
+            self._mqtt.publish_motion_event(cam, clip)
+            _LOGGER.info("Motion clip %s (%s): %d KB", cam.name, when, len(clip) // 1024)
 
     async def _download_clip(self, cam, url: str) -> bytes | None:
         try:

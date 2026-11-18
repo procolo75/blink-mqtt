@@ -5,6 +5,16 @@ All notable changes to this add-on are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-18
+
+### Removed
+- **`blink/cameras/{serial}/event/snapshot` is no longer published.** It carried
+  the camera's home-screen thumbnail (`cam.image_from_cache`), which a motion
+  clip does not refresh, so it showed an older scene rather than the motion.
+  A motion event is now only `blink/cameras/{serial}/event/clip`. When the clip
+  download fails nothing is published and a warning is logged. The regular
+  `blink/cameras/{serial}/snapshot` camera image for Home Assistant is unchanged.
+
 ## [1.3.1] - 2026-11-14
 
 ### Fixed

@@ -223,17 +223,17 @@ class MQTTClient:
         if publish_image and cam.image_from_cache:
             self._pub(f"{base}/snapshot", cam.image_from_cache)
 
-    def publish_motion_event(self, cam, image: bytes | None, clip: bytes | None):
-        """One motion clip: snapshot first, then the MP4 (never retained, QoS 1).
+    def publish_motion_event(self, cam, clip: bytes):
+        """One motion clip as MP4 bytes (~1-3 MB for 10 s), never retained, QoS 1.
 
-        blink/cameras/{serial}/event/snapshot — JPEG bytes
-        blink/cameras/{serial}/event/clip     — MP4 bytes (~1-3 MB for 10 s)
+        blink/cameras/{serial}/event/clip
+
+        No photo is published with it (removed in 1.4.0): the only image blinkpy
+        holds is the camera's home-screen thumbnail (cam.image_from_cache), which
+        a motion clip does not refresh — it showed an older scene, not the motion.
         """
         base = f"{_STATE}/cameras/{cam.serial or slugify(cam.name)}/event"
-        if image:
-            self._pub(f"{base}/snapshot", image, qos=1)
-        if clip:
-            self._pub(f"{base}/clip", clip, qos=1)
+        self._pub(f"{base}/clip", clip, qos=1)
 
     def publish_sync(self, sync):
         nid = str(sync.network_id)

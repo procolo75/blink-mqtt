@@ -96,12 +96,11 @@ Works with Sync Module USB local storage — no Blink subscription needed: blink
 lists a clip once its recording has finished and has the sync module upload it
 temporarily, so the event arrives a few tens of seconds after the motion
 (recording length + poll interval). Clips recorded before the add-on started
-are never re-sent. JARVIS uses these topics to forward photo + video to Telegram.
+are never re-sent. JARVIS uses this topic to forward the video to Telegram.
 
 | Topic | Payload | Notes |
 |---|---|---|
-| `blink/cameras/{serial}/event/snapshot` | JPEG bytes | Thumbnail of the motion |
-| `blink/cameras/{serial}/event/clip` | MP4 bytes | The recorded clip (~1–3 MB for 10 s); omitted if the download failed |
+| `blink/cameras/{serial}/event/clip` | MP4 bytes | The recorded clip (~1–3 MB for 10 s); nothing is published if the download failed |
 
 ### Camera command topics
 
