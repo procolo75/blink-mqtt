@@ -1,6 +1,6 @@
 name: Blink MQTT
 description: Connect Blink cameras to Home Assistant via MQTT with auto-discovery
-version: "1.9.2"
+version: "1.10.0"
 slug: blink_mqtt
 startup: application
 init: false
@@ -19,9 +19,13 @@ options:
   mqtt_user: ""
   mqtt_password: ""
   poll_interval: 30
+  idle_poll_interval: 300
+  auto_thumbnails: false
 schema:
   mqtt_host: str
   mqtt_port: int
   mqtt_user: str
   mqtt_password: str
   poll_interval: "int(10,300)"
+  idle_poll_interval: "int(30,3600)"
+  auto_thumbnails: bool

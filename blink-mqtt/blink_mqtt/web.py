@@ -10,7 +10,7 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse, Res
 from fastapi.templating import Jinja2Templates
 from slugify import slugify
 
-from . import config, settings, syncinfo
+from . import config, settings, syncinfo, thumbs
 from .auth import AUTH_ERRORS, AuthManager, AuthState
 from .liveclip import (LIVE_BOUNDARY, LIVE_SECONDS, CameraBusy, history, is_recording,
                        live_mjpeg, mark_own_activity, record_clip)
@@ -197,9 +197,11 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
                 # wait_for_command() inside snap_picture() handles command completion,
                 # but image upload to Blink CDN may still be in progress
                 await asyncio.sleep(_SNAP_WAIT)
-                # force_cache=True: re-download image even if thumbnail URL didn't change
-                # (BlinkCameraMini often reuses the same URL)
-                await blink.refresh(force=True, force_cache=True)
+                # Download this camera's picture even if the thumbnail URL didn't
+                # change (BlinkCameraMini often reuses the same URL). Not
+                # force_cache: that re-downloads every camera's thumbnail and clip.
+                thumbs.request(cam)
+                await blink.refresh()
                 _LOGGER.info("Snapshot %s — thumbnail after: %s", camera_name, cam.thumbnail)
                 mqtt = getattr(request.app.state, "mqtt", None)
                 if mqtt:

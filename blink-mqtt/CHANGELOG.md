@@ -5,6 +5,32 @@ All notable changes to this add-on are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.10.0] - 2026-11-19
+
+### Fixed
+- **About 38 MB an hour of Blink traffic at rest (~27 GB a month).** The full poll called
+  `blink.refresh(force=True)`, and blinkpy passes `force` on to every camera as
+  `force_cache`. Every 30 s it then re-downloaded each camera's thumbnail and its latest
+  motion clip, changed or not. The poll now calls a plain `refresh()`, with blinkpy's own
+  throttle off (`refresh_rate = 0`), so thumbnails and clips are fetched only when new. The
+  images published to MQTT are unchanged: they were already sent only when the thumbnail changed.
+- **A failed clip download could publish the previous clip.** blinkpy's cache is now used only if
+  the same refresh filled it; otherwise the clip is downloaded on its own, as for older clips.
+
+### Changed
+- **The full poll runs every `poll_interval` (30 s) only when it is needed.** That is while an
+  **armed** module finds its motion clips through it: Local USB, Cloud, or a standalone
+  Mini/doorbell. Otherwise it runs every `idle_poll_interval` (new option, default 300 s) and
+  only refreshes status: Live View modules are watched by the light homescreen check,
+  and a disarmed module records nothing. Arming from Home Assistant triggers a poll at once,
+  and the log notes each switch of cadence.
+- **Pictures only on Snapshot.** Home-screen thumbnails are no longer downloaded when Blink
+  changes them: the Snapshot button (HA or web UI) takes a picture and downloads just that
+  one, Mini cameras included. The new option `auto_thumbnails` (default `false`) brings back the
+  old behaviour. Motion videos are not affected: the gate wraps blinkpy's `get_thumbnail` only.
+- The web UI Snapshot no longer calls `refresh(force_cache=True)`, which re-downloaded every
+  camera's thumbnail and clip, just to update one picture.
+
 ## [1.9.2] - 2026-11-19
 
 ### Fixed

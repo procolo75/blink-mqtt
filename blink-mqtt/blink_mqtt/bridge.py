@@ -4,7 +4,7 @@ from datetime import datetime
 
 from slugify import slugify
 
-from . import config, settings, syncinfo
+from . import config, settings, syncinfo, thumbs
 from blinkpy import api as blink_api
 
 from .auth import AUTH_ERRORS, AuthManager
@@ -13,6 +13,9 @@ from .liveclip import (is_own_activity, looks_like_mp4, mark_own_activity,
 from .mqtt_client import MQTTClient
 
 _LOGGER = logging.getLogger(__name__)
+
+# After snap_picture() the camera still uploads the picture to Blink's CDN.
+SNAPSHOT_UPLOAD_WAIT = 8
 
 
 class Bridge:
@@ -34,6 +37,11 @@ class Bridge:
         # (see _check_device_updates).
         self._device_updated: dict[str, str] = {}
         self._prev_armed: dict[str, bool | None] = {}
+        # Set to cut the full poll's wait short (e.g. right after arming).
+        self._poll_now = asyncio.Event()
+        self._fast_poll: bool | None = None
+        # Cameras whose Snapshot picture is due: published once downloaded.
+        self._snapshot_pending: set[str] = set()
 
     async def run(self):
         self._running = True
@@ -180,19 +188,36 @@ class Bridge:
 
     async def _poll_loop(self):
         first_run = True
+        # refresh(force=True) would also pass force_cache to every camera, and
+        # blinkpy then downloads each camera's thumbnail and its latest clip on
+        # every poll even when unchanged (~38 MB/h measured at rest). A plain
+        # refresh() fetches them only when new; refresh_rate 0 drops blinkpy's
+        # own throttle, the pacing is ours.
+        self._blink.refresh_rate = 0
         while self._running:
             try:
-                await self._blink.refresh(force=True)
+                if not config.AUTO_THUMBNAILS:
+                    thumbs.gate(self._blink.cameras.values())
+                # Which video each camera held before this refresh: a clip is taken
+                # from blinkpy's cache only if this very refresh downloaded it.
+                videos_before = {c.name: c.video_from_cache for c in self._blink.cameras.values()}
+                await self._blink.refresh()
                 for cam in self._blink.cameras.values():
                     new_url = cam.thumbnail
                     old_url = self._thumbnail_cache.get(cam.name)
                     image_changed = new_url != old_url
                     if image_changed:
                         self._thumbnail_cache[cam.name] = new_url
-                    # Always publish sensor data; publish image only when it changed
-                    # or on the very first run (so HA gets an initial value).
-                    self._mqtt.publish_camera(cam, publish_image=(image_changed or first_run))
-                    await self._check_motion_clip(cam, first_run)
+                    snapshot = cam.name in self._snapshot_pending and cam.image_from_cache
+                    if snapshot:
+                        self._snapshot_pending.discard(cam.name)
+                    # Always publish sensor data; the image when it changed, on the
+                    # first run, or when a Snapshot picture arrived. With thumbnails
+                    # gated (default) only Snapshot pictures are ever downloaded.
+                    self._mqtt.publish_camera(
+                        cam, publish_image=bool(image_changed or first_run or snapshot))
+                    fresh = cam.video_from_cache is not videos_before.get(cam.name)
+                    await self._check_motion_clip(cam, first_run, fresh)
                 for sync in self._blink.sync.values():
                     self._mqtt.publish_sync(sync)
                 self._check_device_updates()
@@ -204,9 +229,26 @@ class Bridge:
             except Exception as e:
                 # repr() so exceptions without a message stay identifiable.
                 _LOGGER.error("Poll error: %s", repr(e))
-            await asyncio.sleep(config.POLL_INTERVAL)
+            await self._wait_next_poll()
 
-    async def _check_motion_clip(self, cam, first_run: bool):
+    async def _wait_next_poll(self):
+        """poll_interval while an armed module relies on the poll for its clips,
+        idle_poll_interval otherwise (status only: battery, temperature, arm)."""
+        fast = syncinfo.needs_fast_poll(self._blink.sync.values())
+        if fast != self._fast_poll:
+            self._fast_poll = fast
+            _LOGGER.info("Full poll every %ss (%s)",
+                         config.POLL_INTERVAL if fast else config.IDLE_POLL_INTERVAL,
+                         "an armed module finds its clips through it" if fast
+                         else "no armed USB/Cloud module: status only")
+        self._poll_now.clear()
+        try:
+            await asyncio.wait_for(self._poll_now.wait(),
+                                   config.POLL_INTERVAL if fast else config.IDLE_POLL_INTERVAL)
+        except asyncio.TimeoutError:
+            pass
+
+    async def _check_motion_clip(self, cam, first_run: bool, cache_fresh: bool = True):
         """Publish the clip once for every new entry in cam.recent_clips.
 
         recent_clips is blinkpy's own list of motion clips from the last hour
@@ -228,7 +270,9 @@ class Bridge:
 
         for when in sorted(set(clips) - seen):
             url  = clips[when]
-            clip = cam.video_from_cache if url == cam.clip else None
+            # blinkpy's cache holds the latest clip only if this refresh filled it;
+            # a failed download would leave the previous clip there.
+            clip = cam.video_from_cache if url == cam.clip and cache_fresh else None
             if not looks_like_mp4(clip):
                 clip = await self._download_clip(cam, url)
             if not clip:
@@ -310,6 +354,8 @@ class Bridge:
                 _LOGGER.info("Setting sync %s armed=%s", sync.name, arm)
                 await sync.async_arm(arm)
                 self._mqtt.publish_sync(sync)
+                # Poll now: the new arm state may switch the poll to fast.
+                self._poll_now.set()
                 return
         _LOGGER.warning("Sync network_id=%s not found", nid)
 
@@ -320,11 +366,17 @@ class Bridge:
                 mark_own_activity(serial)
                 await cam.snap_picture()
                 mark_own_activity(serial)
-                # Force-update thumbnail cache so next publish sends fresh image
-                self._thumbnail_cache[cam.name] = None
-                self._mqtt.publish_camera(cam, publish_image=True)
+                # The picture is fetched by the next poll, once the camera has
+                # uploaded it; not awaited here so commands queued behind wait not.
+                self._spawn(self._fetch_snapshot(cam))
                 return
         _LOGGER.warning("Camera serial=%s not found", serial)
+
+    async def _fetch_snapshot(self, cam):
+        await asyncio.sleep(SNAPSHOT_UPLOAD_WAIT)
+        thumbs.request(cam)
+        self._snapshot_pending.add(cam.name)
+        self._poll_now.set()
 
     def _camera(self, serial: str):
         return next((c for c in self._blink.cameras.values()

@@ -14,7 +14,7 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 - **Battery** state sensor per camera (`ok` / `low`)
 - **Temperature** sensor per camera (°C)
 - **WiFi signal** sensor per camera (dBm)
-- **Snapshot** camera entity per camera (live JPEG image)
+- **Snapshot** camera entity per camera: the picture taken by the Snapshot button (automatic home-screen thumbnails are off by default to save data, see `auto_thumbnails`)
 - **Arm/Disarm** switch per sync module (camera devices are linked to their sync module in HA via `via_device`)
 - **Snapshot trigger** command per camera (via MQTT or web UI)
 - **Motion clips over MQTT** — every new motion clip is published as MP4 on `blink/cameras/{serial}/event/clip`, also without a Blink subscription (USB local storage)
@@ -54,7 +54,9 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 | `mqtt_port` | int | `1883` | MQTT broker port |
 | `mqtt_user` | string | _(empty)_ | MQTT username |
 | `mqtt_password` | string | _(empty)_ | MQTT password |
-| `poll_interval` | int (10–300) | `30` | Polling interval in seconds |
+| `poll_interval` | int (10–300) | `30` | Full poll interval in seconds while an **armed** module finds its motion clips through it (Local USB, Cloud, standalone Mini/doorbell) |
+| `auto_thumbnails` | bool | `false` | Download each camera's home-screen thumbnail whenever Blink changes it (pre-1.10 behaviour). Off: pictures only on **Snapshot**. Motion videos are not affected either way |
+| `idle_poll_interval` | int (30–3600) | `300` | Full poll interval otherwise (Live View modules, everything disarmed): status only — battery, temperature, arm state |
 
 Example `options` in the app UI:
 
@@ -64,7 +66,14 @@ mqtt_port: 1883
 mqtt_user: homeassistant
 mqtt_password: yourpassword
 poll_interval: 30
+idle_poll_interval: 300
+auto_thumbnails: false
 ```
+
+**Data usage.** The full poll downloads a motion clip only when it is new, and a picture only
+when you press **Snapshot** (unless `auto_thumbnails` is on). Until 1.9.x every poll
+re-downloaded every camera's thumbnail and latest clip (blinkpy `force_cache`): about **38 MB an
+hour at rest**, ~27 GB a month, which matters on a mobile data SIM.
 
 Live View clip settings (trigger mode, motion polling interval, clip length)
 are not app options: they are edited in the web UI **Live View settings**
@@ -340,7 +349,7 @@ The **Serial** field on each camera card contains the camera's unique identifier
 ```
 
 - **AuthManager** — state machine (`NOT_AUTHENTICATED → WAITING_OTP → AUTHENTICATED`, plus `ERROR` when a session is lost); persists credentials to `/data/blink_credentials.json` and owns the token-refresh patch
-- **Bridge** — runs concurrent async loops: the full Blink poll (`poll_interval`), the fast motion watch for armed Live View modules (`_motion_loop`), and MQTT command processing
+- **Bridge** — runs concurrent async loops: the full Blink poll (`poll_interval` while an armed USB/Cloud module needs it to find clips, `idle_poll_interval` otherwise; arming from HA triggers a poll at once), the fast motion watch for armed Live View modules (`_motion_loop`), and MQTT command processing
 - **liveclip** — opens Live View, records the MP4 with ffmpeg, keeps the per-camera lock, the "own activity" marks (so the app's own Live View/snapshot is not taken for motion) and the clip history
 - **syncinfo** — decides each module's recording mode (Local USB / Cloud / Live View / Standalone)
 - **settings** — Live View settings edited in the web UI, persisted in `/data/blink_settings.json`

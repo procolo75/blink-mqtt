@@ -49,6 +49,23 @@ def recording_mode(sync, cameras) -> str:
     return LIVEVIEW
 
 
+def needs_fast_poll(syncs) -> bool:
+    """True when the full poll is what discovers new motion clips.
+
+    Only an armed module records, and only Local USB / Cloud clips are found by
+    the full poll (cam.recent_clips); a Live View module is watched by the light
+    homescreen check instead. Standalone cameras (Mini, doorbell) carry no
+    reliable arm state, so they count unless known disarmed.
+    """
+    for sync in syncs:
+        mode = recording_mode(sync, list(sync.cameras.values()))
+        if mode in (LOCAL, CLOUD) and sync.arm is True:
+            return True
+        if mode == STANDALONE and sync.arm is not False:
+            return True
+    return False
+
+
 def describe(blink, sync, cameras) -> dict:
     """Fields shown in the web UI for one sync module."""
     entry = homescreen_entry(blink, sync) or {}
