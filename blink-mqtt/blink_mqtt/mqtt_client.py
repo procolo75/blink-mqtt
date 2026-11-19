@@ -43,6 +43,8 @@ class MQTTClient:
             )
             client.subscribe(f"{_STATE}/sync/+/armed/set")
             client.subscribe(f"{_STATE}/cameras/+/snapshot/trigger")
+            client.subscribe(f"{_STATE}/cameras/+/record/trigger")
+            client.subscribe(f"{_STATE}/cameras/+/motion/trigger")
         else:
             _LOGGER.error("MQTT connect failed: rc=%s", rc)
 
@@ -85,6 +87,10 @@ class MQTTClient:
             "name": f"Blink {cam.name}",
             "manufacturer": "Blink",
         }
+        # Show the camera as "connected via" its sync module in HA.
+        nid = getattr(cam.sync, "network_id", None)
+        if nid is not None:
+            dev["via_device"] = f"blink_sync_{nid}"
         avail = {"topic": _AVAIL, "payload_available": "online", "payload_not_available": "offline"}
 
         self._pub(
@@ -157,6 +163,22 @@ class MQTTClient:
                 "state_topic": f"{base}/wifi/state",
                 "device_class": "signal_strength",
                 "unit_of_measurement": "dBm",
+                "availability": [avail],
+                "device": dev,
+            }),
+            retain=True,
+        )
+
+        # Record a Live View clip; it is published on {base}/event/clip.
+        self._pub(
+            f"{_DISCOVERY}/button/blink_{slug}/record/config",
+            json.dumps({
+                "name": "Record clip",
+                "object_id": f"blink_{slug}_record",
+                "unique_id": f"blink_{serial}_record",
+                "command_topic": f"{base}/record/trigger",
+                "payload_press": "PRESS",
+                "icon": "mdi:record-rec",
                 "availability": [avail],
                 "device": dev,
             }),

@@ -1,10 +1,15 @@
 import asyncio
 import logging
+from datetime import datetime
 
 from slugify import slugify
 
-from . import config
+from . import config, settings, syncinfo
+from blinkpy import api as blink_api
+
 from .auth import AUTH_ERRORS, AuthManager
+from .liveclip import (is_own_activity, looks_like_mp4, mark_own_activity,
+                       note_blink_motion, record_clip)
 from .mqtt_client import MQTTClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -22,18 +27,142 @@ class Bridge:
         self._thumbnail_cache: dict[str, str | None] = {}
         # Clip timestamps already seen in cam.recent_clips, per camera serial.
         self._seen_clips: dict[str, set[str]] = {}
+        # Live clip tasks in flight (a reference keeps them from being collected).
+        self._tasks: set[asyncio.Task] = set()
+        # Homescreen `updated_at` per device id and arm state per network at
+        # the previous poll — motion signal for Live View modules
+        # (see _check_device_updates).
+        self._device_updated: dict[str, str] = {}
+        self._prev_armed: dict[str, bool | None] = {}
 
     async def run(self):
         self._running = True
         self._mqtt.set_available(True)
         self._mqtt.publish_discovery(self._blink)
+        self._log_sync_modules()
         await asyncio.gather(
             self._poll_loop(),
             self._command_loop(),
+            self._motion_loop(),
         )
 
     def stop(self):
         self._running = False
+
+    def _log_sync_modules(self):
+        """Once per start: the raw homescreen entry of every sync module.
+
+        The `type` / `subtype` strings Blink uses per model are not documented;
+        this log is where we learn them.
+        """
+        for mod in (self._blink.homescreen or {}).get("sync_modules") or []:
+            _LOGGER.info("Sync module %s: %s", mod.get("name"),
+                         {k: v for k, v in mod.items() if k != "name"})
+
+    async def _motion_loop(self):
+        """Fast watch of camera `updated_at` while a Live View module is armed.
+
+        The full poll (blink.refresh, every poll_interval) is too slow for a
+        motion trigger. This reads only the homescreen, every
+        motion_poll_interval seconds, and only while some module in Live View
+        mode is armed. Own GET, not api.request_homescreen(): that one is
+        throttled to 5 s and returns None when called too soon, which would
+        break blink.refresh() running in _poll_loop.
+        """
+        url = f"{self._blink.urls.base_url}/api/v3/accounts/{self._blink.account_id}/homescreen"
+        while self._running:
+            # Settings are read every round: a change in the web UI applies at once.
+            interval = settings.get()["motion_poll_interval"]
+            if settings.blink_watch() and self._liveview_module_armed():
+                try:
+                    home = await blink_api.http_get(self._blink, url)
+                    if isinstance(home, dict) and "cameras" in home:
+                        self._check_device_updates(home)
+                except AUTH_ERRORS as e:
+                    if self._note_auth_error(e):
+                        return
+                except Exception as e:
+                    _LOGGER.warning("Motion watch error: %s", repr(e))
+                    interval = config.POLL_INTERVAL   # back off
+            await asyncio.sleep(interval)
+
+    def _liveview_module_armed(self) -> bool:
+        return any(
+            s.arm is True and syncinfo.recording_mode(s, list(s.cameras.values())) == syncinfo.LIVEVIEW
+            for s in self._blink.sync.values()
+        )
+
+    def _check_device_updates(self, home: dict | None = None):
+        """Record a Live View clip on motion of a module that stores nothing.
+
+        For a sync module without USB storage or subscription (e.g. Sync
+        Module Core) Blink lists the motion nowhere: no clip in media/changed,
+        and /events/network answers "An app update is required". The camera's
+        homescreen `updated_at` is the signal: verified on 2026-11-19 it moves
+        at every motion notification and stays still otherwise. It also moves
+        when the module is armed/disarmed and when the add-on itself wakes the
+        camera, so a change counts as motion only if:
+          - the camera's module is in Live View mode (syncinfo),
+          - the module was armed at the previous poll AND is armed now,
+          - the change was not caused by our own Live View / snapshot.
+        Latency: up to one poll interval + Live View startup.
+        """
+        home = home or self._blink.homescreen or {}
+        armed_now = {str(s.network_id): s.arm for s in self._blink.sync.values()}
+        # Prefer the arm state carried by the same homescreen snapshot.
+        for net in home.get("networks") or []:
+            if isinstance(net.get("armed"), bool):
+                armed_now[str(net.get("id"))] = net["armed"]
+        cams = {str(c.camera_id): c for c in self._blink.cameras.values()}
+
+        for dev in home.get("cameras") or []:
+            dev_id, new = str(dev.get("id")), dev.get("updated_at")
+            if not new:
+                continue
+            old = self._device_updated.get(dev_id)
+            # Only forward moves: the fast watch and the full poll read the
+            # homescreen at different moments, an older snapshot must not
+            # count as a change (and then the newer one again as another).
+            if old is not None and _ts(new) <= _ts(old):
+                continue
+            self._device_updated[dev_id] = new
+            if old is None:
+                continue
+
+            nid = str(dev.get("network_id"))
+            cam = cams.get(dev_id)
+            decision = self._motion_decision(cam, nid, new, armed_now)
+            _LOGGER.info("Device update %s: updated_at %s -> %s — %s",
+                         dev.get("name"), old, new, decision)
+            if cam is not None and decision.startswith(("motion", "ignored (caused by")):
+                # Blink's own motion stamp, for the "who came first" table.
+                note_blink_motion(cam.serial or slugify(cam.name), _ts(new))
+            if decision == "motion, recording" and cam is not None:
+                self._spawn(self._record_live_clip(cam.serial or slugify(cam.name),
+                                                   "blink", _ts(new)))
+
+        self._prev_armed = armed_now
+
+    def _motion_decision(self, cam, nid: str, updated_at: str, armed_now: dict) -> str:
+        if cam is None:
+            return "ignored (camera unknown)"
+        if syncinfo.recording_mode(cam.sync, list(cam.sync.cameras.values())) != syncinfo.LIVEVIEW:
+            return "ignored (module stores its own clips)"
+        if not (armed_now.get(nid) is True and self._prev_armed.get(nid) is True):
+            return "ignored (arm/disarm or not armed)"
+        when = _ts(updated_at)
+        if not when:
+            return "ignored (bad timestamp)"
+        if is_own_activity(cam.serial or slugify(cam.name), when):
+            return "ignored (caused by the add-on)"
+        if not settings.blink_watch():
+            return f"motion, not recorded by Blink watch (trigger mode: {settings.get()['trigger_mode']})"
+        return "motion, recording"
+
+    def _spawn(self, coro):
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     # ------------------------------------------------------------------
 
@@ -66,6 +195,7 @@ class Bridge:
                     await self._check_motion_clip(cam, first_run)
                 for sync in self._blink.sync.values():
                     self._mqtt.publish_sync(sync)
+                self._check_device_updates()
                 first_run = False
                 self._auth.note_auth_success()
             except AUTH_ERRORS as e:
@@ -99,7 +229,7 @@ class Bridge:
         for when in sorted(set(clips) - seen):
             url  = clips[when]
             clip = cam.video_from_cache if url == cam.clip else None
-            if not _looks_like_mp4(clip):
+            if not looks_like_mp4(clip):
                 clip = await self._download_clip(cam, url)
             if not clip:
                 _LOGGER.warning("Motion clip %s (%s): video not available, nothing published",
@@ -122,7 +252,7 @@ class Bridge:
             _LOGGER.warning("Clip download failed for %s: %s", cam.name, repr(e))
             return None
         # Never forward an error body (JSON/HTML) as a video.
-        if not _looks_like_mp4(data):
+        if not looks_like_mp4(data):
             _LOGGER.warning("Clip download for %s: not an MP4 (%d bytes)", cam.name, len(data))
             return None
         return data
@@ -157,6 +287,21 @@ class Bridge:
             await self._trigger_snapshot(parts[2])
             return
 
+        # blink/cameras/{serial}/record/trigger
+        if (len(parts) == 5 and parts[0] == "blink" and parts[1] == "cameras"
+                and parts[3] == "record" and parts[4] == "trigger"):
+            # In its own task: a recording lasts several seconds and must not
+            # hold up arm/snapshot commands queued behind it.
+            self._spawn(self._record_live_clip(parts[2], "manual"))
+            return
+
+        # blink/cameras/{serial}/motion/trigger — automatic start from outside
+        # (an Alexa routine running an HA script, an HA automation...).
+        if (len(parts) == 5 and parts[0] == "blink" and parts[1] == "cameras"
+                and parts[3] == "motion" and parts[4] == "trigger"):
+            self._external_motion(parts[2])
+            return
+
         _LOGGER.debug("Unhandled topic: %s", topic)
 
     async def _arm_sync(self, nid: str, arm: bool):
@@ -172,14 +317,55 @@ class Bridge:
         for cam in self._blink.cameras.values():
             if (cam.serial or slugify(cam.name)) == serial:
                 _LOGGER.info("Snapshot: %s", cam.name)
+                mark_own_activity(serial)
                 await cam.snap_picture()
+                mark_own_activity(serial)
                 # Force-update thumbnail cache so next publish sends fresh image
                 self._thumbnail_cache[cam.name] = None
                 self._mqtt.publish_camera(cam, publish_image=True)
                 return
         _LOGGER.warning("Camera serial=%s not found", serial)
 
+    def _camera(self, serial: str):
+        return next((c for c in self._blink.cameras.values()
+                     if (c.serial or slugify(c.name)) == serial), None)
 
-def _looks_like_mp4(data) -> bool:
-    """MP4/ISO-BMFF files carry the 'ftyp' box tag at bytes 4..8."""
-    return isinstance(data, (bytes, bytearray)) and data[4:8] == b"ftyp"
+    def _external_motion(self, serial: str):
+        cam = self._camera(serial)
+        if cam is None:
+            reason = "camera not found"
+        elif not settings.external_trigger():
+            reason = f"trigger mode is {settings.get()['trigger_mode']}"
+        elif syncinfo.recording_mode(cam.sync, list(cam.sync.cameras.values())) != syncinfo.LIVEVIEW:
+            reason = "module stores its own clips (USB/cloud)"
+        else:
+            _LOGGER.info("External motion trigger %s — recording", cam.name)
+            self._spawn(self._record_live_clip(serial, "external"))
+            return
+        _LOGGER.info("External motion trigger %s — ignored (%s)", serial, reason)
+
+    async def _record_live_clip(self, serial: str, source: str,
+                                blink_motion: float | None = None):
+        cam = self._camera(serial)
+        if cam is None:
+            _LOGGER.warning("Camera serial=%s not found", serial)
+            return
+        try:
+            clip = await record_clip(cam, serial, settings.get()["clip_seconds"],
+                                     source, blink_motion)
+        except AUTH_ERRORS as e:
+            self._note_auth_error(e)
+            return
+        except Exception as e:
+            _LOGGER.error("Live clip %s failed: %s", cam.name, repr(e))
+            return
+        if clip:
+            self._mqtt.publish_motion_event(cam, clip)
+
+
+def _ts(iso: str) -> float:
+    """Epoch seconds of a Blink ISO timestamp; 0.0 if unparsable."""
+    try:
+        return datetime.fromisoformat(iso).timestamp()
+    except (TypeError, ValueError):
+        return 0.0

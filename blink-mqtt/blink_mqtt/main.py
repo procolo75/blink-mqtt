@@ -3,7 +3,7 @@ import logging
 
 import uvicorn
 
-from . import config
+from . import config, settings
 from .auth import AuthManager
 from .bridge import Bridge
 from .mqtt_client import MQTTClient
@@ -19,6 +19,7 @@ _LOGGER = logging.getLogger(__name__)
 async def main():
     loop = asyncio.get_running_loop()
 
+    _LOGGER.info("Settings: %s", settings.load())
     auth_manager = AuthManager()
     bridge_event = asyncio.Event()
 

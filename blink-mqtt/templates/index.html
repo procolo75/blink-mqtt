@@ -70,9 +70,39 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
 .alert-info { background: rgba(59,130,246,.12); border: 1px solid rgba(59,130,246,.3); color: #93c5fd; }
 
 /* ── sync row ── */
-.sync-row { display: flex; align-items: center; justify-content: space-between; padding: .65rem 0; border-bottom: 1px solid var(--border); }
-.sync-row:last-child { border-bottom: none; padding-bottom: 0; }
 .sync-name { font-weight: 600; font-size: .9rem; }
+.group-actions { display: flex; align-items: center; gap: .5rem; }
+.sync-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem; margin-top: .35rem; }
+/* ── tabs ── */
+.tabs { display: flex; gap: .4rem; border-bottom: 1px solid var(--border); }
+.tab { padding: .55rem 1rem; color: var(--muted); text-decoration: none; font-weight: 600; font-size: .85rem; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+.tab-panel { display: flex; flex-direction: column; gap: 1.25rem; }
+.tab-panel[hidden] { display: none; }
+
+/* ── settings ── */
+.set-text { font-size: .85rem; line-height: 1.6; }
+.set-text p + p { margin-top: .5rem; }
+.set-text code { font-size: .78rem; background: var(--card); padding: .05rem .3rem; border-radius: 4px; word-break: break-all; }
+.muted { color: var(--muted); font-size: .78rem; }
+.scope-row { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin-top: .6rem; }
+.scope-label { font-size: .72rem; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); min-width: 6.5rem; }
+.mode { display: flex; gap: .7rem; align-items: flex-start; padding: .75rem; border: 1px solid var(--border); border-radius: 8px; margin-bottom: .6rem; cursor: pointer; }
+.mode:has(input:checked) { border-color: var(--accent); background: rgba(59,130,246,.07); }
+.mode input { margin-top: .3rem; accent-color: var(--accent); }
+.pro { color: var(--green); font-weight: 700; }
+.con { color: var(--amber); font-weight: 700; margin-left: .4rem; }
+.field p { margin-top: .3rem; }
+.steps { padding-left: 1.2rem; display: flex; flex-direction: column; gap: .5rem; }
+.script-box { margin-top: .9rem; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.script-head { display: flex; align-items: center; gap: .5rem; padding: .45rem .75rem; background: var(--card); }
+.script-head .btn { margin-left: auto; }
+.script-box pre { margin: 0; padding: .75rem; font-size: .75rem; overflow-x: auto; background: #0b0d11; }
+.table-wrap { overflow-x: auto; }
+.hist { width: 100%; border-collapse: collapse; font-size: .78rem; }
+.hist th, .hist td { padding: .4rem .5rem; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.hist th { color: var(--muted); font-weight: 600; }
+.diag-link { font-size: .7rem; color: var(--muted); margin-left: .2rem; }
 
 /* ── camera grid ── */
 .cam-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 1rem; }
@@ -180,49 +210,63 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
 
   {% if error %}<div class="alert alert-err" style="margin-bottom:1rem;">{{ error }}</div>{% endif %}
 
-  <!-- Sync modules -->
-  {% if syncs %}
+  <div class="tabs">
+    <a href="#cameras" class="tab" data-tab="cameras">📷 Cameras</a>
+    <a href="#settings" class="tab" data-tab="settings">⚙️ Live View settings</a>
+  </div>
+
+  <div class="tab-panel" id="tab-cameras">
+  <!-- One section per sync module, holding its own cameras -->
+  {% if not groups %}
   <div class="card">
-    <div class="card-header"><span class="card-title">Sync Modules</span></div>
-    <div class="card-body">
-      {% for s in syncs %}
-      <div class="sync-row">
-        <div>
-          <div class="sync-name">{{ s.name }}</div>
-          <span class="badge {{ 'badge-on' if s.armed else 'badge-off' }}">
-            {{ "ARMED" if s.armed else "DISARMED" }}
-          </span>
-        </div>
-        <div>
-          {% if s.armed %}
-          <form method="post" action="{{ base }}/arm/{{ s.nid }}/off"
-                onsubmit="showOverlay('Disarming {{ s.name }}…');disableBtn(this)">
-            <button type="submit" class="btn btn-ghost btn-sm" data-loading="Disarming…">
-              Disarm
-            </button>
-          </form>
-          {% else %}
-          <form method="post" action="{{ base }}/arm/{{ s.nid }}/on"
-                onsubmit="showOverlay('Arming {{ s.name }}…');disableBtn(this)">
-            <button type="submit" class="btn btn-success btn-sm" data-loading="Arming…">
-              Arm
-            </button>
-          </form>
-          {% endif %}
-        </div>
-      </div>
-      {% endfor %}
+    <div class="card-body" style="color:var(--muted);text-align:center;padding:2rem;">
+      No cameras found.
     </div>
   </div>
   {% endif %}
 
-  <!-- Cameras -->
-  {% if cameras %}
+  {% for g in groups %}
   <div class="card">
-    <div class="card-header"><span class="card-title">Cameras ({{ cameras|length }})</span></div>
+    <div class="card-header">
+      <div>
+        <span class="sync-name">{{ g.name }}</span>
+        <span class="card-title" style="margin-left:.4rem;">{{ g.cameras|length }} camera{{ "" if g.cameras|length == 1 else "s" }}</span>
+        {% if g.recording %}
+        <div class="sync-meta">
+          <span class="chip {{ 'chip-green' if g.recording in ('Local USB', 'Cloud') else 'chip-amber' if g.recording == 'Live View' else 'chip-muted' }}"
+                title="Where motion clips come from">🎞 {{ g.recording }}</span>
+          {% if g.model %}<span class="chip chip-muted" title="Sync module type (Blink)">{{ g.model }}</span>{% endif %}
+          {% if g.fw %}<span class="chip chip-muted" title="Firmware">fw {{ g.fw }}</span>{% endif %}
+          {% if g.usb_capable is not none %}
+          <span class="chip chip-muted" title="Hardware supports USB local storage">USB {{ "yes" if g.usb_capable else "no" }}</span>
+          {% endif %}
+          {% if g.nid %}<a class="diag-link" href="{{ base }}/debug/sync/{{ g.nid }}" target="_blank">Diagnostics</a>{% endif %}
+        </div>
+        {% endif %}
+      </div>
+      {% if g.nid %}
+      <div class="group-actions">
+        <span class="badge {{ 'badge-on' if g.armed else 'badge-off' }}">
+          {{ "ARMED" if g.armed else "DISARMED" }}
+        </span>
+        {% if g.armed %}
+        <form method="post" action="{{ base }}/arm/{{ g.nid }}/off"
+              onsubmit="showOverlay('Disarming {{ g.name }}…');disableBtn(this)">
+          <button type="submit" class="btn btn-ghost btn-sm" data-loading="Disarming…">Disarm</button>
+        </form>
+        {% else %}
+        <form method="post" action="{{ base }}/arm/{{ g.nid }}/on"
+              onsubmit="showOverlay('Arming {{ g.name }}…');disableBtn(this)">
+          <button type="submit" class="btn btn-success btn-sm" data-loading="Arming…">Arm</button>
+        </form>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    {% if g.cameras %}
     <div class="card-body" style="padding:0;">
       <div class="cam-grid" style="padding:1rem;padding-top:.75rem;">
-        {% for cam in cameras %}
+        {% for cam in g.cameras %}
         <div class="cam-card">
           <div class="cam-img-wrap">
             <img src="{{ base }}/image/{{ cam.name }}?t={{ now }}"
@@ -237,9 +281,6 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
               {% if cam.is_mini %}<span class="cam-type-label">Mini</span>
               {% elif cam.cam_type == "BlinkDoorbell" %}<span class="cam-type-label">Doorbell</span>
               {% endif %}
-            </span>
-            <span class="badge {{ 'badge-on' if cam.armed else 'badge-off' }}">
-              {{ "ARMED" if cam.armed else "DISARMED" }}
             </span>
           </div>
           <div class="cam-body">
@@ -276,6 +317,14 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
             {% if cam.is_mini %}
             <div class="alert-mini">Mini: snapshot aggiorna solo se c'è stato un evento</div>
             {% endif %}
+            <form method="post" action="{{ base }}/record/{{ cam.name }}"
+                  onsubmit="showOverlay('Recording {{ cam.name }}… ({{ clip_seconds }}s + Live View startup)');disableBtn(this)">
+              <button type="submit" class="btn btn-ghost btn-sm" data-loading="Recording…"
+                      title="Record {{ clip_seconds }}s of Live View and publish it on event/clip"
+                      {% if cam.recording %}disabled{% endif %}>
+                🎥 {{ "Recording…" if cam.recording else "Record clip" }}
+              </button>
+            </form>
             <form method="post" action="{{ base }}/snapshot/{{ cam.name }}"
                   onsubmit="showOverlay('Snapshot {{ cam.name }}… (8s)');disableBtn(this)">
               <button type="submit" class="btn btn-ghost btn-sm" data-loading="Capturing…">
@@ -287,14 +336,184 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
         {% endfor %}
       </div>
     </div>
+    {% else %}
+    <div class="card-body" style="color:var(--muted);font-size:.8rem;">No cameras</div>
+    {% endif %}
   </div>
-  {% else %}
-  <div class="card">
-    <div class="card-body" style="color:var(--muted);text-align:center;padding:2rem;">
-      No cameras found.
+  {% endfor %}
+  </div> <!-- end tab-cameras -->
+
+  <!-- ── SETTINGS TAB ── -->
+  <div class="tab-panel" id="tab-settings">
+
+    <!-- Scope: which modules these settings touch -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Live View clips — what these settings apply to</span></div>
+      <div class="card-body set-text">
+        <p>These settings apply <b>only to sync modules in Live View mode</b>: no USB storage and no
+          Blink subscription. Blink saves nothing for them, so the add-on records the clip itself
+          from Live View and publishes it on <code>event/clip</code> (JARVIS → Telegram).</p>
+        <div class="scope-row">
+          <span class="scope-label">Affected</span>
+          {% if liveview_groups %}
+            {% for g in liveview_groups %}<span class="chip chip-amber">🎞 {{ g.name }}</span>{% endfor %}
+          {% else %}
+            <span class="muted">none — these settings currently have no effect</span>
+          {% endif %}
+        </div>
+        <div class="scope-row">
+          <span class="scope-label">Not affected</span>
+          {% if own_clip_groups %}
+            {% for g in own_clip_groups %}<span class="chip chip-green">🎞 {{ g.name }} · {{ g.recording }}</span>{% endfor %}
+          {% else %}
+            <span class="muted">none</span>
+          {% endif %}
+        </div>
+        <div class="alert alert-info" style="margin:.75rem 0 0;">
+          <b>Sync modules with USB storage (or a subscription) are never touched by anything on this
+          page.</b> The camera records its own clip from the very moment of motion and the add-on
+          forwards it as before — better than any Live View clip. Nothing here starts, stops or
+          changes their recordings.
+        </div>
+      </div>
     </div>
-  </div>
-  {% endif %}
+
+    <form method="post" action="{{ base }}/settings" onsubmit="showOverlay('Saving…')">
+
+    <!-- Trigger mode -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">What starts a clip automatically on motion</span></div>
+      <div class="card-body set-text">
+        <label class="mode">
+          <input type="radio" name="trigger_mode" value="blink" {{ 'checked' if settings.trigger_mode == 'blink' }}>
+          <span><b>Blink polling</b> <span class="chip chip-muted">default</span><br>
+          While a Live View module is armed, the add-on asks Blink every <i>N</i> seconds (below) whether
+          a camera's <code>updated_at</code> changed — Blink bumps it at every motion notification.
+          Works with nothing else to set up.<br>
+          <span class="pro">+</span> self-contained, only depends on Blink.
+          <span class="con">−</span> about {{ (3600 // settings.motion_poll_interval) }} extra requests to Blink per hour while armed;
+          reacts up to <i>N</i> seconds late.</span>
+        </label>
+        <label class="mode">
+          <input type="radio" name="trigger_mode" value="external" {{ 'checked' if settings.trigger_mode == 'external' }}>
+          <span><b>Alexa / external</b><br>
+          The add-on does not poll Blink. Something else tells it about the motion by publishing
+          <code>blink/cameras/{serial}/motion/trigger</code> — typically an Alexa routine
+          ("Blink camera detects motion") running a Home Assistant script, see the guide below.<br>
+          <span class="pro">+</span> no extra requests to Blink; Alexa often hears about the motion a few seconds earlier.
+          <span class="con">−</span> chain of three clouds (Blink → Alexa → Home Assistant): if one has a problem
+          the clip silently does not start.</span>
+        </label>
+        <label class="mode">
+          <input type="radio" name="trigger_mode" value="both" {{ 'checked' if settings.trigger_mode == 'both' }}>
+          <span><b>Both</b><br>
+          Blink polling and Alexa together: the first one starts the clip, the other is skipped
+          (one recording per camera at a time — you get one video). Most reliable, same requests as
+          Blink polling. Use it also to compare them in the table below.</span>
+        </label>
+        <label class="mode">
+          <input type="radio" name="trigger_mode" value="off" {{ 'checked' if settings.trigger_mode == 'off' }}>
+          <span><b>Off</b><br>
+          No automatic clip. The <b>Record clip</b> button (web UI, Home Assistant) still works.</span>
+        </label>
+        <p class="muted" style="margin-top:.5rem;">The <b>Record clip</b> button works in every mode: it is a manual
+          command (<code>record/trigger</code>), not a motion trigger.</p>
+      </div>
+    </div>
+
+    <!-- Numbers -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Timing</span></div>
+      <div class="card-body set-text">
+        <div class="field">
+          <label for="motion_poll_interval">Blink polling interval (seconds, 5–60)</label>
+          <input type="number" id="motion_poll_interval" name="motion_poll_interval" min="5" max="60"
+                 value="{{ settings.motion_poll_interval }}" required>
+          <p class="muted">Used only by <b>Blink polling</b> and <b>Both</b>, and only while a Live View
+            module is armed. Lower = reacts sooner, more requests. 5 is the minimum.</p>
+        </div>
+        <div class="field">
+          <label for="clip_seconds">Clip length (seconds, 5–60)</label>
+          <input type="number" id="clip_seconds" name="clip_seconds" min="5" max="60"
+                 value="{{ settings.clip_seconds }}" required>
+          <p class="muted">Every second of Live View keeps the camera awake: longer clips cost more battery.</p>
+        </div>
+        <div class="alert alert-info" style="margin:0;">
+          <b>Why the clip starts after the motion.</b> Delay = time to learn about the motion
+          (polling interval, or Alexa) + about 5 s for Blink to open Live View. A Live View clip
+          therefore shows what happens <i>after</i> the motion, never the moment itself. Only a module
+          with USB storage records that moment.
+        </div>
+        <button type="submit" class="btn btn-primary" style="margin-top:1rem;">Save — applies at once</button>
+      </div>
+    </div>
+
+    </form>
+
+    <!-- Alexa guide -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Alexa setup — needed for “Alexa / external” and “Both”</span></div>
+      <div class="card-body set-text">
+        <ol class="steps">
+          <li><b>Link Blink to Alexa:</b> Alexa app → More → Skills &amp; Games → <i>Blink SmartHome</i> →
+            Enable → sign in with the Blink account → Discover devices.<br>
+            <span class="con">⚠</span> Linking may start a <b>Blink plan trial</b> on its own. Check in the
+            Blink app and cancel it if you don't want it: while a plan is active Blink stores cloud clips,
+            the module switches to <i>Cloud</i> mode and the add-on forwards those clips instead (up to an
+            hour after cancelling — restart the add-on to switch back at once).</li>
+          <li><b>Create the script</b> in Home Assistant for each camera below: Settings → Automations &amp;
+            scenes → Scripts → Add → ⋮ → Edit in YAML → paste → Save.</li>
+          <li><b>Expose it to Alexa</b> (Nabu Casa): Settings → Voice assistants → Expose → Expose
+            entities → the script → Amazon Alexa. Then Alexa app → Devices → + → Discover devices.
+            It appears in Alexa as a <b>scene</b>.</li>
+          <li><b>Alexa routine:</b> Alexa app → More → Routines → + →
+            <i>When this happens</i>: Smart Home → the camera → Motion detected →
+            <i>Add action</i>: Smart Home → Scenes → the script.</li>
+          <li>Set the mode above to <b>Alexa / external</b> or <b>Both</b>.</li>
+        </ol>
+        {% for g in liveview_groups %}{% for c in g.cameras %}
+        <div class="script-box">
+          <div class="script-head"><b>{{ c.name }}</b> <span class="muted">({{ g.name }})</span>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="copyScript(this)">Copy</button></div>
+          <pre>{{ c.script }}</pre>
+        </div>
+        {% endfor %}{% else %}
+        <p class="muted">No camera in a Live View module — no script needed.</p>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- History -->
+    <div class="card">
+      <div class="card-header"><span class="card-title">Last Live View clips — who came first</span></div>
+      <div class="card-body set-text">
+        {% if history %}
+        <div class="table-wrap">
+        <table class="hist">
+          <tr><th>Started</th><th>Camera</th><th>Source</th><th>Blink motion</th><th>vs Blink</th><th>Result</th><th>Length</th></tr>
+          {% for h in history %}
+          <tr>
+            <td>{{ h.started }}</td><td>{{ h.camera }}</td><td>{{ h.source }}</td>
+            <td>{{ h.blink_motion or "—" }}</td><td>{{ h.lead or "—" }}</td>
+            <td>{{ h.result }}</td><td>{{ h.duration or "—" }}</td>
+          </tr>
+          {% endfor %}
+        </table>
+        </div>
+        {% else %}
+        <p class="muted">No clip since the add-on started.</p>
+        {% endif %}
+        <p class="muted" style="margin-top:.6rem;">
+          <b>Blink motion</b> = when Blink stamped the motion (<code>updated_at</code>).
+          <b>vs Blink</b> = clip start minus that stamp: <b>negative</b> = started before Blink stamped it
+          (Alexa was faster), positive = after. With <b>Both</b>, the loser shows as
+          <i>skipped (already recording)</i>. The stamp of an Alexa start is filled when the add-on next
+          reads Blink (polling, or the regular 30 s refresh). Kept in memory, cleared on restart.
+        </p>
+      </div>
+    </div>
+
+  </div> <!-- end tab-settings -->
 
   {% endif %} <!-- end authenticated -->
 
@@ -317,12 +536,34 @@ function disableBtn(form) {
   }
 }
 
-// Auto-refresh countdown (only when authenticated)
+// Copy a generated HA script to the clipboard
+function copyScript(btn) {
+  const text = btn.closest('.script-box').querySelector('pre').textContent;
+  const done = () => { btn.textContent = 'Copied'; setTimeout(() => btn.textContent = 'Copy', 1500); };
+  if (navigator.clipboard) navigator.clipboard.writeText(text).then(done, () => {});
+}
+
+// Tabs: the URL hash (#cameras / #settings) picks the panel, so a reload or
+// the redirect after saving lands on the same tab.
+function currentTab() { return location.hash === '#settings' ? 'settings' : 'cameras'; }
+function showTab() {
+  const t = currentTab();
+  document.querySelectorAll('.tab-panel').forEach(p => p.hidden = p.id !== 'tab-' + t);
+  document.querySelectorAll('.tab').forEach(a => a.classList.toggle('active', a.dataset.tab === t));
+  const lbl = document.getElementById('refresh-label');
+  if (lbl) lbl.style.visibility = t === 'settings' ? 'hidden' : 'visible';
+}
+window.addEventListener('hashchange', showTab);
+showTab();
+
+// Auto-refresh countdown (only when authenticated). Paused on the settings
+// tab, so a form being edited is never reset.
 {% if state == "authenticated" %}
 (function () {
   let secs = {{ poll_interval }};
   const el = document.getElementById('countdown');
   const timer = setInterval(() => {
+    if (currentTab() === 'settings') return;
     secs -= 1;
     if (el) el.textContent = secs;
     if (secs <= 0) { clearInterval(timer); location.reload(); }

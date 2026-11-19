@@ -5,6 +5,148 @@ All notable changes to this add-on are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] - 2026-11-19
+
+### Added
+- **Live View settings tab** in the web UI. Trigger mode, motion polling
+  interval and clip length are edited there, apply at once (no restart) and
+  are kept in `/data/blink_settings.json`. They touch only sync modules in
+  Live View mode; the tab lists which ones.
+- **Trigger mode** for the automatic Live View clip: `blink` (watch the
+  camera's `updated_at`, as in 1.7.0), `external`, `both` (the first one
+  wins, the other is logged as skipped) or `off`. The manual Record clip
+  button works in every mode.
+- **External motion trigger** `blink/cameras/{serial}/motion/trigger`: starts
+  a Live View clip from outside, e.g. an Alexa routine (Blink SmartHome skill
+  → motion detected) running a Home Assistant script. Ignored, with the
+  reason logged, when the mode does not allow it or the module stores its
+  own clips. The tab shows the ready-to-paste HA script for each camera and
+  the Alexa setup steps.
+- **Clip history** in the settings tab: the last 10 Live View clips with
+  source, Blink's motion stamp and the lead over it (negative = started
+  before Blink stamped the motion), result and length. In memory only.
+
+### Removed
+- Add-on options `live_clip_seconds`, `live_clip_on_motion` and
+  `motion_poll_interval`: replaced by the settings tab. Defaults are the same
+  (mode `blink`, 5 s, 10 s); a value changed in the old options is not
+  carried over.
+
+## [1.7.1] - 2026-11-19
+
+### Fixed
+- **Live View clips shorter than requested (4 s instead of 10).** blinkpy's
+  `BlinkLiveStream.recv()` (0.25.5, unchanged in 0.25.9) reads each IMMIS
+  packet with `read(n)`, which returns fewer bytes when a packet arrives split
+  across TCP segments — normal on the internet. blinkpy took that as the end
+  of the stream (`Insufficient data for payload: 114 bytes, expected 1316`)
+  and closed it, so every clip stopped at a random point. `liveclip._LiveStream`
+  overrides only `recv()`, reading with `readexactly()`; blinkpy stays pinned.
+  Tested with a server that splits every packet: blinkpy forwarded 0 of
+  156 416 bytes, the new reader all of them (12 s of video).
+
+### Changed
+- The `Live clip` log line reports the real duration measured with ffprobe:
+  `Live clip <camera>: 10.0 s (requested 10), 380 KB`. A clip more than 1 s
+  shorter than requested is logged as a warning (`stream ended early`).
+
+## [1.7.0] - 2026-11-19
+
+### Added
+- **Automatic Live View clip on motion** for sync modules in Live View mode
+  (no USB storage, no subscription). The motion signal is the camera's
+  homescreen `updated_at`: checked against the Blink app on 2026-11-19, it
+  moved at every motion notification (09:33, 09:34, 09:37) and stayed still
+  for 13 minutes without motion. It also moves on arm/disarm and when the
+  add-on wakes the camera, so a change counts as motion only if the module is
+  in Live View mode, was armed at the previous poll **and** is armed now, and
+  the change does not fall within 20 s of our own Live View or snapshot.
+  The clip is published on `blink/cameras/{serial}/event/clip` as usual.
+  USB modules are untouched.
+- **Fast motion watch.** The full poll (`poll_interval`, 30 s) was too slow
+  to start a useful clip. While a Live View module is armed, the add-on reads
+  only the homescreen every `motion_poll_interval` seconds (default 5) with its
+  own GET — blinkpy's `request_homescreen()` is throttled to 5 s and returns
+  None when called too soon, which would break `blink.refresh()`. The arm
+  state is taken from the same homescreen snapshot when present. `updated_at`
+  only counts when it moves forward, so the two readers never double-trigger.
+  Latency: up to `motion_poll_interval` + Live View startup.
+- **New options** `live_clip_on_motion` (default `true`) and
+  `motion_poll_interval` (5–60, default 5).
+
+### Changed
+- `live_clip_seconds` default 15 → **10** (less battery).
+- The `Device update …` log line now ends with the decision taken
+  (`motion, recording` or `ignored (reason)`).
+
+## [1.6.3] - 2026-11-19
+
+### Added
+- **Motion probe for sync modules without storage.** For a Sync Module Core
+  without subscription Blink lists no motion anywhere (no clip in
+  `media/changed`, `/events/network` answers "An app update is required"); the
+  only field seen changing at a motion notification is the camera's homescreen
+  `updated_at`. Every change is now logged on each poll:
+  `Device update <camera>: updated_at <old> -> <new> (armed=…, status=…)`.
+  Diagnostic only — nothing is triggered yet. It also changes on our own Live
+  View, logged as `Live View <camera>: command …`.
+
+## [1.6.2] - 2026-11-19
+
+### Fixed
+- **"Record failed: An app update is required".** Blink no longer accepts the
+  Live View endpoints of blinkpy 0.25.5. The request now uses the ones from
+  blinkpy 0.25.9: `/api/v6/.../cameras/{id}/liveview` (v2 for Mini and
+  doorbell), body `{"intent": "liveview", "motion_event_start_time": null}`.
+  blinkpy itself stays pinned at 0.25.5 (auth.py patches its login); its
+  `livestream.py` is identical in 0.25.9.
+
+## [1.6.1] - 2026-11-19
+
+### Fixed
+- **"Record failed: server".** Live View was opened through blinkpy's
+  `cam.init_livestream()`, which in 0.25.5 waits up to 120 s for the Live View
+  command to *complete* before returning (the stream is over by then) and turns
+  any refusal into `KeyError('server')`, hiding Blink's answer. The add-on now
+  sends the Live View request itself (same endpoints as blinkpy) and wraps the
+  answer in `BlinkLiveStream` right away. When Blink refuses, its full answer is
+  logged (`Live View <camera> refused, Blink answered: …`) and its message is
+  shown in the web UI.
+
+## [1.6.0] - 2026-11-19
+
+### Added
+- **Live View clip recording.** For a sync module where Blink stores no clip
+  (no USB storage, no subscription — e.g. Sync Module Core/1), the add-on can
+  record the clip itself: it opens Live View (blinkpy `BlinkLiveStream`),
+  ffmpeg remuxes `live_clip_seconds` of it to MP4, and the clip is published
+  on `blink/cameras/{serial}/event/clip`, the same topic as USB clips, so
+  JARVIS forwards it to Telegram unchanged. Triggers: MQTT
+  `blink/cameras/{serial}/record/trigger`, a new HA button **Record clip**, and
+  a **Record clip** button on each camera card. One recording per camera at a
+  time. New module `liveclip.py`; ffmpeg added to the image.
+  Not automatic yet: the motion signal for those modules is still to be found.
+- **New option `live_clip_seconds`** (5–60, default 15).
+- **Sync module info in the web UI**: recording mode (Local USB / Cloud /
+  Live View / Standalone), model, firmware, USB capability. The mode rule
+  lives in the new `syncinfo.py`.
+- **Diagnostics** per sync module: `GET /debug/sync/{network_id}` returns the
+  raw Blink data (homescreen entry and devices, network events, last 15 min of
+  clips) to find where motion of a storage-less module shows up.
+- The homescreen entry of each sync module is logged once at bridge start.
+
+## [1.5.0] - 2026-11-19
+
+### Changed
+- **Web UI groups cameras by sync module.** Each sync module is now its own
+  section — name, ARMED/DISARMED badge and Arm/Disarm button in the header, its
+  cameras below — replacing the separate "Sync Modules" card and the flat camera
+  grid. Mini cameras (their own pseudo-sync in blinkpy) get their own section;
+  a camera matching no sync module is listed under "Other". The per-camera
+  ARMED badge is gone (it repeated the section's).
+- **MQTT discovery:** each camera device now declares `via_device` = its sync
+  module, so Home Assistant shows it as "connected via Blink <sync>".
+
 ## [1.4.0] - 2026-11-18
 
 ### Removed
