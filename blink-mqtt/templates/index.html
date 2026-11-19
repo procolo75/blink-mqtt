@@ -366,7 +366,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
       <div class="card-header"><span class="card-title">Live View clips — what these settings apply to</span></div>
       <div class="card-body set-text">
         <p>These settings apply <b>only to sync modules in Live View mode</b>: no USB storage and no
-          Blink subscription. Blink saves nothing for them, so the add-on records the clip itself
+          Blink subscription. Blink saves nothing for them, so the app records the clip itself
           from Live View and publishes it on <code>event/clip</code> (JARVIS → Telegram).</p>
         <div class="scope-row">
           <span class="scope-label">Affected</span>
@@ -386,7 +386,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
         </div>
         <div class="alert alert-info" style="margin:.75rem 0 0;">
           <b>Sync modules with USB storage (or a subscription) are never touched by anything on this
-          page.</b> The camera records its own clip from the very moment of motion and the add-on
+          page.</b> The camera records its own clip from the very moment of motion and the app
           forwards it as before — better than any Live View clip. Nothing here starts, stops or
           changes their recordings.
         </div>
@@ -402,7 +402,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
         <label class="mode">
           <input type="radio" name="trigger_mode" value="blink" {{ 'checked' if settings.trigger_mode == 'blink' }}>
           <span><b>Blink polling</b> <span class="chip chip-muted">default</span><br>
-          While a Live View module is armed, the add-on asks Blink every <i>N</i> seconds (below) whether
+          While a Live View module is armed, the app asks Blink every <i>N</i> seconds (below) whether
           a camera's <code>updated_at</code> changed — Blink bumps it at every motion notification.
           Works with nothing else to set up.<br>
           <span class="pro">+</span> self-contained, only depends on Blink.
@@ -412,7 +412,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
         <label class="mode">
           <input type="radio" name="trigger_mode" value="external" {{ 'checked' if settings.trigger_mode == 'external' }}>
           <span><b>Alexa / external</b><br>
-          The add-on does not poll Blink. Something else tells it about the motion by publishing
+          The app does not poll Blink. Something else tells it about the motion by publishing
           <code>blink/cameras/{serial}/motion/trigger</code> — typically an Alexa routine
           ("Blink camera detects motion") running a Home Assistant script, see the guide below.<br>
           <span class="pro">+</span> no extra requests to Blink; Alexa often hears about the motion a few seconds earlier.
@@ -474,8 +474,8 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
             Enable → sign in with the Blink account → Discover devices.<br>
             <span class="con">⚠</span> Linking may start a <b>Blink plan trial</b> on its own. Check in the
             Blink app and cancel it if you don't want it: while a plan is active Blink stores cloud clips,
-            the module switches to <i>Cloud</i> mode and the add-on forwards those clips instead (up to an
-            hour after cancelling — restart the add-on to switch back at once).</li>
+            the module switches to <i>Cloud</i> mode and the app forwards those clips instead (up to an
+            hour after cancelling — restart the app to switch back at once).</li>
           <li><b>Create the script</b> in Home Assistant for each camera below: Settings → Automations &amp;
             scenes → Scripts → Add → ⋮ → Edit in YAML → paste → Save.</li>
           <li><b>Expose it to Alexa</b> (Nabu Casa): Settings → Voice assistants → Expose → Expose
@@ -516,13 +516,13 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
         </table>
         </div>
         {% else %}
-        <p class="muted">No clip since the add-on started.</p>
+        <p class="muted">No clip since the app started.</p>
         {% endif %}
         <p class="muted" style="margin-top:.6rem;">
           <b>Blink motion</b> = when Blink stamped the motion (<code>updated_at</code>).
           <b>vs Blink</b> = clip start minus that stamp: <b>negative</b> = started before Blink stamped it
           (Alexa was faster), positive = after. With <b>Both</b>, the loser shows as
-          <i>skipped (already recording)</i>. The stamp of an Alexa start is filled when the add-on next
+          <i>skipped (already recording)</i>. The stamp of an Alexa start is filled when the app next
           reads Blink (polling, or the regular 30 s refresh). Kept in memory, cleared on restart.
         </p>
       </div>
@@ -555,7 +555,7 @@ function disableBtn(form) {
 // "ffmpeg", each with a Content-length). It is read with fetch() and split
 // here, not shown with <img src>: HA Ingress drops the boundary from the
 // Content-Type, so an <img> cannot decode it. fetch() also sees the HTTP
-// status and the add-on's error text. The server stops Live View after
+// status and the app's error text. The server stops Live View after
 // {{ live_seconds }} s or when the connection is aborted (Close).
 let liveCount = 0;   // cards currently live: the page auto-refresh waits for 0
 const _HDR_END = [13, 10, 13, 10];

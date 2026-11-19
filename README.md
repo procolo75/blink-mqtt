@@ -1,8 +1,8 @@
-# Blink MQTT — Home Assistant Add-on
+# Blink MQTT — Home Assistant App
 
-A Home Assistant add-on that bridges **Blink cameras** to **MQTT** with full **Home Assistant auto-discovery**.
+A Home Assistant app that bridges **Blink cameras** to **MQTT** with full **Home Assistant auto-discovery**.
 
-Authentication is handled through a built-in web UI (HA Ingress). Once authenticated, the add-on polls the Blink API periodically and publishes camera state to MQTT, making every camera and sync module available in Home Assistant automatically — no manual entity configuration needed.
+Authentication is handled through a built-in web UI (HA Ingress). Once authenticated, the app polls the Blink API periodically and publishes camera state to MQTT, making every camera and sync module available in Home Assistant automatically — no manual entity configuration needed.
 
 ---
 
@@ -19,7 +19,7 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 - **Snapshot trigger** command per camera (via MQTT or web UI)
 - **Motion clips over MQTT** — every new motion clip is published as MP4 on `blink/cameras/{serial}/event/clip`, also without a Blink subscription (USB local storage)
 - **Live view in the web UI** — a **Live** button on each camera card shows 10 s of Live View (MJPEG, works in the HA iOS/Android apps too), then stops by itself to save battery
-- **Live View clip recording** — for sync modules where Blink stores nothing (no USB, no subscription, e.g. Sync Module Core): the add-on records the clip itself from Live View, manually (HA button, MQTT, web UI) or **automatically on motion**
+- **Live View clip recording** — for sync modules where Blink stores nothing (no USB, no subscription, e.g. Sync Module Core): the app records the clip itself from Live View, manually (HA button, MQTT, web UI) or **automatically on motion**
 - **Motion triggers for Live View clips** — Blink polling (`updated_at` watch, every 5 s while armed), an **external trigger** (Alexa routine → HA script → MQTT), both, or off — chosen in the web UI
 - **Recording mode per sync module** shown in the web UI: Local USB / Cloud / Live View / Standalone
 - **Live View settings tab** — trigger mode, polling interval, clip length (applied at once, no restart), Alexa setup guide with ready-to-paste HA scripts, history of the last 10 Live View clips
@@ -32,14 +32,14 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 ## Requirements
 
 - Home Assistant OS or Supervised
-- **Mosquitto broker** add-on (or any MQTT broker reachable from the add-on)
+- **Mosquitto broker** app (or any MQTT broker reachable from the app)
 - A Blink account with at least one sync module and camera
 
 ---
 
 ## Installation
 
-1. In Home Assistant, go to **Settings → Add-ons → Add-on Store**
+1. In Home Assistant, go to **Settings → Apps → Install App**
 2. Click the three-dot menu (⋮) → **Repositories**
 3. Add the repository URL `https://github.com/procolo75/blink-mqtt` and click **Add**
 4. Find **Blink MQTT** in the list and click **Install**
@@ -56,7 +56,7 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 | `mqtt_password` | string | _(empty)_ | MQTT password |
 | `poll_interval` | int (10–300) | `30` | Polling interval in seconds |
 
-Example `options` in the add-on UI:
+Example `options` in the app UI:
 
 ```yaml
 mqtt_host: core-mosquitto
@@ -67,24 +67,24 @@ poll_interval: 30
 ```
 
 Live View clip settings (trigger mode, motion polling interval, clip length)
-are not add-on options: they are edited in the web UI **Live View settings**
+are not app options: they are edited in the web UI **Live View settings**
 tab, apply at once and are kept in `/data/blink_settings.json`.
 
-A new option shows up in the add-on UI only after **updating** to a higher version, not after a Rebuild.
+A new option shows up in the app UI only after **updating** to a higher version, not after a Rebuild.
 
 ---
 
 ## How motion clips are obtained — recording modes
 
-Blink only hands out motion video when something stores it. The add-on
+Blink only hands out motion video when something stores it. The app
 decides, **per sync module**, where the clip of a motion comes from, and shows
 it as a chip in the web UI:
 
 | Mode | When | Where the clip comes from | Delay after motion | Cost |
 |---|---|---|---|---|
-| **Local USB** | Blink reports USB storage `active` on the module (`local_storage_status`) | The module records from the moment of motion; blinkpy lists the clip once recording has finished and the add-on downloads it | recording length + up to `poll_interval` | none |
+| **Local USB** | Blink reports USB storage `active` on the module (`local_storage_status`) | The module records from the moment of motion; blinkpy lists the clip once recording has finished and the app downloads it | recording length + up to `poll_interval` | none |
 | **Cloud** | No USB, but Blink lists cloud clips for its cameras (inferred: there is no direct "subscription" flag) | Blink cloud clip, downloaded like a USB one | as above | Blink plan |
-| **Live View** | Neither of the above: Blink stores nothing (e.g. **Sync Module Core/1** without a plan) | The add-on opens **Live View** and records it to MP4 itself | trigger latency + ~5 s Live View startup | battery: every clip wakes the camera |
+| **Live View** | Neither of the above: Blink stores nothing (e.g. **Sync Module Core/1** without a plan) | The app opens **Live View** and records it to MP4 itself | trigger latency + ~5 s Live View startup | battery: every clip wakes the camera |
 | **Standalone** | A Mini camera (blinkpy models it as its own pseudo-sync) | — | — | — |
 
 Whatever the mode, the clip is published on the **same topic**,
@@ -103,10 +103,10 @@ need no change.
 
 ## First-time Setup
 
-1. Start the add-on and open the **Web UI** (via the Ingress panel)
+1. Start the app and open the **Web UI** (via the Ingress panel)
 2. Enter your **Blink account email and password**
 3. Blink will send an **SMS code** to your phone — enter it in the OTP form
-4. Once authenticated, the add-on starts polling and publishes all entities to MQTT
+4. Once authenticated, the app starts polling and publishes all entities to MQTT
 
 On subsequent restarts the saved refresh token is used automatically. No OTP required unless the token expires (typically after several weeks of inactivity).
 
@@ -134,7 +134,7 @@ Published once per **new motion clip**, in this order, never retained, QoS 1.
 Works with Sync Module USB local storage — no Blink subscription needed: blinkpy
 lists a clip once its recording has finished and has the sync module upload it
 temporarily, so the event arrives a few tens of seconds after the motion
-(recording length + poll interval). Clips recorded before the add-on started
+(recording length + poll interval). Clips recorded before the app started
 are never re-sent. JARVIS uses this topic to forward the video to Telegram.
 
 | Topic | Payload | Notes |
@@ -166,7 +166,7 @@ their own clips and are never touched.
 
 | Mode | What starts the clip | Pros | Cons |
 |---|---|---|---|
-| `blink` (default) | The add-on watches Blink (`updated_at`, see below) every *motion polling interval* while the module is armed | Nothing to set up | ~3600 / interval extra requests to Blink per hour while armed (720 at 5 s); latency up to the interval |
+| `blink` (default) | The app watches Blink (`updated_at`, see below) every *motion polling interval* while the module is armed | Nothing to set up | ~3600 / interval extra requests to Blink per hour while armed (720 at 5 s); latency up to the interval |
 | `external` | Only `blink/cameras/{serial}/motion/trigger` (Alexa routine, HA automation…) | Often faster; no extra polling | Needs the Alexa / HA setup below |
 | `both` | Whichever comes first; the other is logged as *skipped (already recording)* | Best latency, fallback if one fails | Both costs |
 | `off` | Nothing automatic | — | — |
@@ -184,16 +184,16 @@ Settings in the tab:
 They apply at once (no restart) and are stored in `/data/blink_settings.json`.
 
 **External trigger — Alexa setup.** Blink's own Alexa skill exposes each camera
-as a motion sensor, and Alexa often learns about a motion before the add-on's
+as a motion sensor, and Alexa often learns about a motion before the app's
 polling does. The chain is: *Alexa routine (camera motion) → HA script exposed
-to Alexa → MQTT `motion/trigger` → add-on records*.
+to Alexa → MQTT `motion/trigger` → app records*.
 
 1. **Link Blink to Alexa:** Alexa app → More → Skills & Games → *Blink
    SmartHome* → Enable → sign in with the Blink account → Discover devices.
    ⚠ Linking may start a **Blink plan trial** by itself. Check the Blink app
    and cancel it if you don't want it: while a plan is active Blink stores
-   cloud clips, the module switches to **Cloud** mode and the add-on forwards
-   those clips instead (up to an hour after cancelling — restart the add-on to
+   cloud clips, the module switches to **Cloud** mode and the app forwards
+   those clips instead (up to an hour after cancelling — restart the app to
    switch back at once).
 2. **Create one HA script per camera** (Settings → Automations & scenes →
    Scripts → Add → ⋮ → Edit in YAML). The settings tab shows the YAML ready
@@ -231,9 +231,9 @@ between `blink`, `external` and `both`. Kept in memory, cleared on restart.
 **Automatic on motion** (mode `blink` or `both`). Blink lists the
 motion of such a module nowhere (no clip, `/events/network` is deprecated), but
 it bumps the camera's homescreen `updated_at` at every motion notification. It
-also bumps it on arm/disarm and when the add-on wakes the camera, so a change
+also bumps it on arm/disarm and when the app wakes the camera, so a change
 counts as motion only if the module is in **Live View** mode, was armed at the
-previous poll and still is, and the change is not within 20 s of the add-on's
+previous poll and still is, and the change is not within 20 s of the app's
 own Live View or snapshot. Every change is logged with the decision:
 `Device update <camera>: updated_at <old> -> <new> — motion, recording` or
 `— ignored (<reason>)`. While such a module is armed, the signal is read every
@@ -254,7 +254,7 @@ extra is polled while no Live View module is armed.
 |---|---|
 | `blink/availability` | `online` / `offline` |
 
-`offline` is sent as a Last Will Testament (LWT) so HA marks all entities unavailable if the add-on stops unexpectedly. It is also published when the add-on is not authenticated, after a logout, and when the Blink session is lost and a new login is required.
+`offline` is sent as a Last Will Testament (LWT) so HA marks all entities unavailable if the app stops unexpectedly. It is also published when the app is not authenticated, after a logout, and when the Blink session is lost and a new login is required.
 
 ---
 
@@ -296,7 +296,7 @@ The built-in dashboard is accessible via **Home Assistant Ingress** (no port for
 
 - **Camera cards** — snapshot thumbnail, motion/armed status badges, battery, temperature, WiFi, serial number
 - **One section per sync module** — its cameras, arm state with one-click Arm/Disarm, and chips for:
-  - **Recording mode**, decided in this order: **Local USB** (Blink reports USB storage `active`), **Cloud** (no USB, but Blink lists cloud clips for its cameras → subscription; inferred, no direct flag exists), **Live View** (neither: Blink stores nothing, the add-on records from Live View). Mini cameras are blinkpy pseudo-syncs: **Standalone**.
+  - **Recording mode**, decided in this order: **Local USB** (Blink reports USB storage `active`), **Cloud** (no USB, but Blink lists cloud clips for its cameras → subscription; inferred, no direct flag exists), **Live View** (neither: Blink stores nothing, the app records from Live View). Mini cameras are blinkpy pseudo-syncs: **Standalone**.
   - **Model** (Blink's `type`/`subtype` string), **firmware**, **USB yes/no** (does the hardware support local storage).
   - **Diagnostics** link — raw Blink data for that module (homescreen entry, network events, clips of the last 15 min). Open it right after a motion notification.
 - **Record clip button** — records a Live View clip and publishes it on `event/clip`
@@ -313,7 +313,7 @@ The **Serial** field on each camera card contains the camera's unique identifier
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  blink-mqtt add-on                                  │
+│  blink-mqtt app                                  │
 │                                                     │
 │  ┌─────────────┐   asyncio    ┌──────────────────┐  │
 │  │  AuthManager│ ──────────── │  Bridge           │  │
@@ -341,7 +341,7 @@ The **Serial** field on each camera card contains the camera's unique identifier
 
 - **AuthManager** — state machine (`NOT_AUTHENTICATED → WAITING_OTP → AUTHENTICATED`, plus `ERROR` when a session is lost); persists credentials to `/data/blink_credentials.json` and owns the token-refresh patch
 - **Bridge** — runs concurrent async loops: the full Blink poll (`poll_interval`), the fast motion watch for armed Live View modules (`_motion_loop`), and MQTT command processing
-- **liveclip** — opens Live View, records the MP4 with ffmpeg, keeps the per-camera lock, the "own activity" marks (so the add-on's own Live View/snapshot is not taken for motion) and the clip history
+- **liveclip** — opens Live View, records the MP4 with ffmpeg, keeps the per-camera lock, the "own activity" marks (so the app's own Live View/snapshot is not taken for motion) and the clip history
 - **syncinfo** — decides each module's recording mode (Local USB / Cloud / Live View / Standalone)
 - **settings** — Live View settings edited in the web UI, persisted in `/data/blink_settings.json`
 - **MQTTClient** — paho-mqtt wrapper; publishes HA discovery configs and state topics; routes incoming commands to the bridge via an asyncio queue
@@ -356,15 +356,15 @@ The **Serial** field on each camera card contains the camera's unique identifier
 - `CookieJar(unsafe=True)` is required to preserve OAuth session cookies — [blinkpy PR #1229](https://github.com/fronzbot/blinkpy/pull/1229)
 - `Auth.refresh_tokens()` is redirected to the **OAuth v2** endpoint (see below)
 
-**Token refresh** — The add-on authenticates through the OAuth v2 PKCE flow (`client_id = "ios"`). blinkpy, however, renews the expiring access token by itself inside `Auth.query()`, and its `refresh_tokens()` uses the **legacy v1 grant** (`client_id = "android"`): a v2 refresh token is never valid for the v1 client, so about an hour after login every request failed with `Login endpoint failed. Try again later.` The add-on therefore patches `Auth.refresh_tokens()` to call `oauth_refresh_token()` (v2) instead, serialised by a lock — the poll loop and a web command can reach `query()` at the same time, and Blink rotates refresh tokens, so two concurrent refreshes would present an already-consumed token. Every successful refresh rewrites `/data/blink_credentials.json`, keeping the saved token in sync with the rotation.
+**Token refresh** — The app authenticates through the OAuth v2 PKCE flow (`client_id = "ios"`). blinkpy, however, renews the expiring access token by itself inside `Auth.query()`, and its `refresh_tokens()` uses the **legacy v1 grant** (`client_id = "android"`): a v2 refresh token is never valid for the v1 client, so about an hour after login every request failed with `Login endpoint failed. Try again later.` The app therefore patches `Auth.refresh_tokens()` to call `oauth_refresh_token()` (v2) instead, serialised by a lock — the poll loop and a web command can reach `query()` at the same time, and Blink rotates refresh tokens, so two concurrent refreshes would present an already-consumed token. Every successful refresh rewrites `/data/blink_credentials.json`, keeping the saved token in sync with the rotation.
 
-The same v2 endpoint is used to restore the session on restart (no PKCE flow, no OTP). Refresh tokens last several weeks; when one is genuinely revoked or expired the add-on stops the bridge, marks the entities unavailable and shows the login form with a clear message — see below.
+The same v2 endpoint is used to restore the session on restart (no PKCE flow, no OTP). Refresh tokens last several weeks; when one is genuinely revoked or expired the app stops the bridge, marks the entities unavailable and shows the login form with a clear message — see below.
 
-**Session loss handling** — A single failed refresh can mean either a revoked token or a Blink server hiccup, so the add-on tolerates **3 consecutive authentication failures** (≈90 s at the default poll interval) before declaring the session dead. Until then it keeps retrying; after that it stops the bridge, publishes `offline` on `blink/availability` and switches the web UI to the login form. Blink API errors in the web UI (snapshot, arm/disarm) are reported as a message on the dashboard — they never surface as an `Internal Server Error`.
+**Session loss handling** — A single failed refresh can mean either a revoked token or a Blink server hiccup, so the app tolerates **3 consecutive authentication failures** (≈90 s at the default poll interval) before declaring the session dead. Until then it keeps retrying; after that it stops the bridge, publishes `offline` on `blink/availability` and switches the web UI to the login form. Blink API errors in the web UI (snapshot, arm/disarm) are reported as a message on the dashboard — they never surface as an `Internal Server Error`.
 
 **Thumbnail caching** — Snapshot images are only re-published to MQTT when the thumbnail URL changes (or on the first poll), preventing unnecessary MQTT traffic.
 
-**Live View** — The Live View request is sent by the add-on itself, not through
+**Live View** — The Live View request is sent by the app itself, not through
 blinkpy's `cam.init_livestream()`: in 0.25.5 that call waits up to 120 s for
 the command to complete and hides Blink's refusal in `KeyError('server')`. The
 endpoints are those of blinkpy 0.25.9 (`/api/v6/.../cameras/{id}/liveview`, v2
@@ -388,7 +388,7 @@ browser and in the HA apps, and lets the page show the real HTTP status and
 error text. The request opens Live
 View before answering, so a busy camera returns `409` and a Blink refusal
 `502` instead of a broken image. It shares the per-camera lock with clip
-recording (one Live View per camera at a time) and is marked as the add-on's
+recording (one Live View per camera at a time) and is marked as the app's
 own activity, so the motion watch ignores it. Live View is stopped after
 10 s of video, when the viewer closes it, and in any case after 35 s by a
 timer that does not depend on the viewer's connection.
@@ -408,11 +408,11 @@ fast watch never trigger twice.
 | Symptom | Cause / fix |
 |---|---|
 | A camera or a whole sync module is missing from the web UI and HA | The sync module is **off or offline**: Blink does not list its cameras. Power it on; the camera comes back at the next poll. |
-| A new add-on option does not show up | Options appear only after **updating** to a higher version, not after a Rebuild. For a local add-on: Add-on Store → ⋮ → Check for updates. |
+| A new app option does not show up | Options appear only after **updating** to a higher version, not after a Rebuild. For a local app: Install App → ⋮ → Check for updates. |
 | No automatic Live View clip | Check that the module chip says **Live View**, the module is **armed**, and the trigger mode is not `off`. Every `updated_at` change is logged with the decision (`Device update … — ignored (<reason>)`). |
 | A module with a Blink plan shows **Live View** | Cloud is inferred from recent clips; with no motion in the last hour it falls back to Live View. |
-| A Live View module suddenly shows **Cloud** | A Blink plan (often a trial started by the Alexa skill) is active. Cancel it in the Blink app if unwanted and restart the add-on. |
-| `Record failed: An app update is required` | Blink changed the Live View endpoint again; open an issue with the add-on log. |
+| A Live View module suddenly shows **Cloud** | A Blink plan (often a trial started by the Alexa skill) is active. Cancel it in the Blink app if unwanted and restart blink-mqtt. |
+| `Record failed: An app update is required` | Blink changed the Live View endpoint again; open an issue with the blink-mqtt log. |
 | Live shows "Live failed (409): camera busy" | A Live View clip is being recorded for that camera (or another viewer is watching). Retry after it ends. |
 | Live shows "Live failed (502): …" | Blink refused Live View or sent no video (camera offline, sync module off, weak WiFi). The log has `Live view <camera>: refused (…)`. |
 | Live shows "Live View ended without video" | Blink opened Live View but sent no picture (camera asleep, weak WiFi). The log has `Live view <camera>: ended after … 0 KB sent`. |
