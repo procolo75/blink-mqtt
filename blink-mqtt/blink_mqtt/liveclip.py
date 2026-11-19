@@ -242,6 +242,105 @@ async def _record(cam, serial: str, seconds: int) -> tuple[bytes | None, float |
     return data, actual
 
 
+# ── Live view in the web UI ───────────────────────────────────────────────
+#
+# MJPEG (multipart/x-mixed-replace in an <img>), not fragmented MP4 in a
+# <video>: the HA iOS app's WebView does not reliably play a progressive MP4
+# stream, MJPEG works everywhere. ffmpeg's `mpjpeg` muxer writes the multipart
+# parts itself (boundary "ffmpeg"), so the bytes go to the browser as they are.
+# Fixed 10 s for every camera: each second of Live View costs battery.
+
+LIVE_SECONDS = 10
+LIVE_BOUNDARY = "ffmpeg"
+
+
+class CameraBusy(Exception):
+    """The camera is already in Live View (clip recording or another viewer)."""
+
+
+async def live_mjpeg(cam, serial: str):
+    """Async generator of MJPEG multipart bytes: LIVE_SECONDS of Live View.
+
+    Shares the per-camera lock with record_clip(): one Live View per camera, so
+    a motion clip that fires meanwhile is skipped. Raises CameraBusy, or
+    LiveViewError / auth errors, on the first iteration — the caller primes it
+    to turn them into an HTTP status. Live View is stopped when the stream
+    ends, the viewer goes away (generator closed or cancelled) or the hard
+    ceiling of LIVE_SECONDS + _STARTUP_GRACE is reached.
+    """
+    lock = _locks.setdefault(serial, asyncio.Lock())
+    if lock.locked():
+        raise CameraBusy(cam.name)
+    async with lock:
+        mark_own_activity(serial)
+        started = time.monotonic()
+        reason, sent = "stream ended", 0
+        stream = feed = proc = None
+
+        def _hard_stop():
+            # Fires even if the consumer abandoned the generator suspended at
+            # `yield` (closed connection not yet collected): the camera never
+            # stays in Live View past the ceiling.
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+            if stream is not None:
+                stream.stop()
+
+        killer = asyncio.get_running_loop().call_later(
+            LIVE_SECONDS + _STARTUP_GRACE, _hard_stop)
+        try:
+            stream = await _open_liveview(cam)
+            await stream.start()
+            feed = asyncio.create_task(stream.feed())
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-hide_banner", "-loglevel", "error",
+                # small probe: the first frame should not wait for 5 s of analysis
+                "-probesize", "200000", "-analyzeduration", "1000000",
+                "-i", stream.url, "-t", str(LIVE_SECONDS), "-an",
+                "-vf", "fps=5,scale=640:-2", "-q:v", "7",
+                "-f", "mpjpeg", "-boundary_tag", LIVE_BOUNDARY, "pipe:1",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            deadline = started + LIVE_SECONDS + _STARTUP_GRACE
+            while True:
+                left = deadline - time.monotonic()
+                if left <= 0:
+                    reason = "time limit"
+                    break
+                try:
+                    chunk = await asyncio.wait_for(proc.stdout.read(65536), left)
+                except asyncio.TimeoutError:
+                    reason = "time limit"
+                    break
+                if not chunk:
+                    break
+                sent += len(chunk)
+                yield chunk
+        except (asyncio.CancelledError, GeneratorExit):
+            reason = "closed by viewer"
+            raise
+        except Exception as e:
+            reason = f"error: {e!r}"
+            raise
+        finally:
+            killer.cancel()
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            if stream is not None:
+                stream.stop()
+            if feed is not None:
+                feed.cancel()
+                try:
+                    await feed
+                except (asyncio.CancelledError, Exception):
+                    pass
+            mark_own_activity(serial)
+            _LOGGER.info("Live view %s: ended after %.0f s (%s), %d KB sent",
+                         cam.name, time.monotonic() - started, reason, sent // 1024)
+
+
 async def _probe_duration(data: bytes) -> float | None:
     """Real duration of an MP4 via ffprobe (reads it from stdin); None if unknown."""
     try:

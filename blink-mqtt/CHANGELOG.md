@@ -5,6 +5,57 @@ All notable changes to this add-on are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.2] - 2026-11-19
+
+### Fixed
+- **Live never showed a frame through Home Assistant.** HA Ingress (both the
+  core proxy and the Supervisor's) keeps only the part of `Content-Type`
+  before `;`, so the browser received `multipart/x-mixed-replace` without
+  `boundary=ffmpeg` and the `<img>` could not split the frames. The add-on
+  side was fine (`Live View <camera>: command …` in the log). The page now
+  reads `/live/<camera>` with `fetch()` and splits the MJPEG parts itself
+  (each carries a `Content-length`), showing every JPEG in the card. Tested
+  behind a proxy that strips the boundary like Ingress: 50 of 50 frames.
+- Errors now show the real HTTP status and the add-on's reason
+  (`Live failed (409): camera busy…`), read from the response itself; the
+  `/live-outcome` endpoint of 1.9.1 is gone. Close aborts the request, which
+  stops Live View on the add-on.
+
+## [1.9.1] - 2026-11-19
+
+### Fixed
+- **"Camera busy or Live View refused" with nothing in the log.** The page
+  showed one generic message for any failure of the Live image, and a camera
+  not found (404) or busy (409) was answered without a log line, so the cause
+  was invisible. Now every Live request is logged on arrival
+  (`Live view <camera>: requested`) and every refusal with its reason; when
+  the image fails, the page asks the add-on (`GET /live-outcome/<camera>`) and
+  shows the real reason — or says that the request never reached the add-on.
+
+## [1.9.0] - 2026-11-19
+
+### Added
+- **Live button on every camera card** in the web UI: shows the camera's
+  Live View in the card for **10 s**, then stops by itself (battery) — same
+  limit for every camera. A countdown shows the time left; **Close** stops
+  it earlier. Served as **MJPEG** (`GET /live/<camera>`,
+  `multipart/x-mixed-replace`, 640 px, ~5 fps, no audio) because the HA iOS
+  app does not reliably play a progressive MP4 stream; MJPEG works in every
+  browser and in the HA apps. ffmpeg's `mpjpeg` muxer writes the stream.
+- Live View is stopped when the 10 s are over, when the page or the card is
+  closed, and in any case after 35 s (hard timer, also when the viewer's
+  connection is abandoned). Log: `Live view <camera>: ended after 10 s
+  (stream ended), 450 KB sent`.
+
+### Notes
+- One Live View per camera: the live view shares the lock of Live View clip
+  recording. A motion clip that fires while someone is watching is skipped
+  (`skipped (already recording)`); Live on a camera that is recording shows
+  "Camera busy".
+- The live view is marked as the add-on's own activity, so the `updated_at`
+  motion watch does not take it for motion.
+- The page auto-refresh waits while a live view is open.
+
 ## [1.8.0] - 2026-11-19
 
 ### Added

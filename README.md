@@ -18,6 +18,7 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 - **Arm/Disarm** switch per sync module (camera devices are linked to their sync module in HA via `via_device`)
 - **Snapshot trigger** command per camera (via MQTT or web UI)
 - **Motion clips over MQTT** — every new motion clip is published as MP4 on `blink/cameras/{serial}/event/clip`, also without a Blink subscription (USB local storage)
+- **Live view in the web UI** — a **Live** button on each camera card shows 10 s of Live View (MJPEG, works in the HA iOS/Android apps too), then stops by itself to save battery
 - **Live View clip recording** — for sync modules where Blink stores nothing (no USB, no subscription, e.g. Sync Module Core): the add-on records the clip itself from Live View, manually (HA button, MQTT, web UI) or **automatically on motion**
 - **Motion triggers for Live View clips** — Blink polling (`updated_at` watch, every 5 s while armed), an **external trigger** (Alexa routine → HA script → MQTT), both, or off — chosen in the web UI
 - **Recording mode per sync module** shown in the web UI: Local USB / Cloud / Live View / Standalone
@@ -300,6 +301,7 @@ The built-in dashboard is accessible via **Home Assistant Ingress** (no port for
   - **Diagnostics** link — raw Blink data for that module (homescreen entry, network events, clips of the last 15 min). Open it right after a motion notification.
 - **Record clip button** — records a Live View clip and publishes it on `event/clip`
 - **Live View settings tab** — trigger mode, motion polling interval, clip length, Alexa setup with per-camera HA scripts, history of the last 10 Live View clips (source, lead over Blink's motion stamp, result, length)
+- **Live button** — shows the camera's Live View in place of the thumbnail for **10 s** (every camera, to save battery), with a countdown and a **Close** button. MJPEG, 640 px, ~5 fps, no audio: chosen because it plays everywhere, including the HA iOS app, where a streamed MP4 does not reliably play. The first frame arrives after ~5 s (Live View startup). Not recorded and not published on MQTT — use **Record clip** for that
 - **Snapshot button** — triggers a new image capture and refreshes the thumbnail
 - **Auto-refresh** — page reloads automatically every `poll_interval` seconds when authenticated
 
@@ -375,6 +377,22 @@ measured with ffprobe and logged (`Live clip <camera>: 10.0 s (requested 10),
 380 KB`), with a warning when it is more than 1 s short. One recording per
 camera at a time.
 
+**Live view (web UI)** — `GET /live/<camera>` opens Live View with the same
+code as clip recording and pipes it through ffmpeg's `mpjpeg` muxer
+(`multipart/x-mixed-replace`, boundary `ffmpeg`); HA Ingress streams it
+unbuffered. It is **not** shown with `<img src>`: Ingress (core and
+Supervisor) keeps only the part of `Content-Type` before `;`, so the browser
+never learns the boundary. The page reads the response with `fetch()`, splits
+the parts by their `Content-length` and shows each JPEG — this works in every
+browser and in the HA apps, and lets the page show the real HTTP status and
+error text. The request opens Live
+View before answering, so a busy camera returns `409` and a Blink refusal
+`502` instead of a broken image. It shares the per-camera lock with clip
+recording (one Live View per camera at a time) and is marked as the add-on's
+own activity, so the motion watch ignores it. Live View is stopped after
+10 s of video, when the viewer closes it, and in any case after 35 s by a
+timer that does not depend on the viewer's connection.
+
 **Motion signal for Live View modules** — Blink records nothing for a module
 without storage (no clip, `/events/network` is deprecated). The only field
 that moves at a motion notification is the camera's homescreen `updated_at`.
@@ -395,6 +413,10 @@ fast watch never trigger twice.
 | A module with a Blink plan shows **Live View** | Cloud is inferred from recent clips; with no motion in the last hour it falls back to Live View. |
 | A Live View module suddenly shows **Cloud** | A Blink plan (often a trial started by the Alexa skill) is active. Cancel it in the Blink app if unwanted and restart the add-on. |
 | `Record failed: An app update is required` | Blink changed the Live View endpoint again; open an issue with the add-on log. |
+| Live shows "Live failed (409): camera busy" | A Live View clip is being recorded for that camera (or another viewer is watching). Retry after it ends. |
+| Live shows "Live failed (502): …" | Blink refused Live View or sent no video (camera offline, sync module off, weak WiFi). The log has `Live view <camera>: refused (…)`. |
+| Live shows "Live View ended without video" | Blink opened Live View but sent no picture (camera asleep, weak WiFi). The log has `Live view <camera>: ended after … 0 KB sent`. |
+| A motion clip was skipped while watching Live | Expected: one Live View per camera, the clip finds the camera busy (`skipped (already recording)`). |
 | `stream ended early` warning | Blink closed Live View before the requested length (weak WiFi, camera busy). The shorter clip is still published. |
 | Login form appears after weeks | The refresh token expired or was revoked: log in again with the OTP. |
 

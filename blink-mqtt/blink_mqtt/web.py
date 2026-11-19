@@ -5,13 +5,15 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Form, Request
 from blinkpy import api as blink_api
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse, Response,
+                               StreamingResponse)
 from fastapi.templating import Jinja2Templates
 from slugify import slugify
 
 from . import config, settings, syncinfo
 from .auth import AUTH_ERRORS, AuthManager, AuthState
-from .liveclip import history, is_recording, mark_own_activity, record_clip
+from .liveclip import (LIVE_BOUNDARY, LIVE_SECONDS, CameraBusy, history, is_recording,
+                       live_mjpeg, mark_own_activity, record_clip)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -135,6 +137,7 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
                 "settings": settings.get(),
                 "history": _history_rows(),
                 "clip_seconds": settings.get()["clip_seconds"],
+                "live_seconds": LIVE_SECONDS,
                 "poll_interval": 30,
                 "now": int(time.time()),
             },
@@ -221,6 +224,54 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
                         mqtt.publish_motion_event(cam, clip)
                     auth_manager.note_auth_success()
         return RedirectResponse(url=f"{_base(request)}/", status_code=303)
+
+    def _live_fail(camera_name: str, status: int, msg: str) -> Response:
+        _LOGGER.warning("Live view %s: refused (%d %s)", camera_name, status, msg)
+        return Response(msg, status_code=status, media_type="text/plain")
+
+    @app.get("/live/{camera_name:path}")
+    async def live(camera_name: str):
+        """LIVE_SECONDS of Live View as MJPEG parts, read by the page with fetch().
+
+        Not shown with <img src>: HA Ingress (core and Supervisor) keeps only
+        the part of Content-Type before ';', so the browser never gets
+        `boundary=ffmpeg` and an <img> cannot split the frames. The page knows
+        the boundary and parses the parts itself (Content-length of each).
+
+        The generator is primed here (Live View opened, first frame read), so a
+        busy camera or a Blink refusal becomes an HTTP status + text the page
+        shows. Dropping the connection (Close, page closed) stops Live View.
+        """
+        _LOGGER.info("Live view %s: requested", camera_name)
+        blink = auth_manager.blink
+        cam = blink.cameras.get(camera_name) if blink else None
+        if cam is None:
+            return _live_fail(camera_name, 404, "camera not found by the add-on")
+        frames = live_mjpeg(cam, cam.serial or slugify(cam.name))
+        try:
+            first = await frames.__anext__()
+        except CameraBusy:
+            return _live_fail(camera_name, 409, "camera busy: a clip is being recorded")
+        except StopAsyncIteration:
+            return _live_fail(camera_name, 502, "Live View opened but no video arrived")
+        except AUTH_ERRORS as e:
+            auth_manager.note_auth_failure(e)
+            return _live_fail(camera_name, 502, f"Blink session error: {e!r}")
+        except Exception as e:
+            return _live_fail(camera_name, 502, f"Live View failed: {e}")
+        auth_manager.note_auth_success()
+
+        async def body():
+            try:
+                yield first
+                async for chunk in frames:
+                    yield chunk
+            finally:
+                await frames.aclose()
+
+        return StreamingResponse(
+            body(), media_type=f"multipart/x-mixed-replace;boundary={LIVE_BOUNDARY}",
+            headers={"Cache-Control": "no-store"})
 
     @app.post("/settings")
     async def save_settings(
