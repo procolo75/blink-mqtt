@@ -10,7 +10,9 @@ from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse, Res
 from fastapi.templating import Jinja2Templates
 from slugify import slugify
 
-from . import config, settings, syncinfo, thumbs
+from . import camstatus, config, settings, syncinfo, thumbs
+from . import snapshot as snapshot_mod
+from .snapshot import SnapshotError
 from .auth import AUTH_ERRORS, AuthManager, AuthState
 from .liveclip import (LIVE_BOUNDARY, LIVE_SECONDS, CameraBusy, history, is_recording,
                        live_mjpeg, mark_own_activity, record_clip)
@@ -18,9 +20,6 @@ from .liveclip import (LIVE_BOUNDARY, LIVE_SECONDS, CameraBusy, history, is_reco
 _LOGGER = logging.getLogger(__name__)
 
 templates = Jinja2Templates(directory="/templates")
-
-_SNAP_WAIT = 8  # seconds to wait after snap_picture() for the camera to upload
-
 
 def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAPI:
     app = FastAPI()
@@ -43,7 +42,9 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
 
     def _cam_info(cam) -> dict:
         cam_cls = type(cam).__name__   # BlinkCamera / BlinkCameraMini / BlinkDoorbell
+        offline = camstatus.offline_reason(auth_manager.blink, cam)
         return {
+            "offline": offline,
             "name": cam.name,
             "serial": cam.serial or slugify(cam.name),
             "battery": cam.battery,
@@ -75,6 +76,7 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
                 "name": name,
                 "nid": str(sync.network_id),
                 "armed": sync.arm is True,   # arm can be True/False/None
+                "offline": camstatus.sync_offline(blink, sync),
                 "cameras": [_cam_info(c) for c in members],
                 **syncinfo.describe(blink, sync, members),
             })
@@ -83,6 +85,11 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
             groups.append({"name": "Other", "nid": None, "armed": False,
                            "cameras": [_cam_info(c) for c in orphans]})
         return groups
+
+    def _poll_interval() -> int:
+        blink = auth_manager.blink
+        fast = bool(blink) and syncinfo.needs_fast_poll(blink.sync.values())
+        return config.POLL_INTERVAL if fast else config.IDLE_POLL_INTERVAL
 
     _SOURCE_LABELS = {"blink": "Blink (polling)", "external": "Alexa / external",
                       "manual": "Manual"}
@@ -119,6 +126,10 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
     @app.get("/", response_class=HTMLResponse)
     async def index(request: Request):
         groups = _groups()
+        # Action errors (Snapshot, Record...) are shown once on the dashboard.
+        flash = ""
+        if auth_manager.state == AuthState.AUTHENTICATED and auth_manager.error_msg:
+            flash, auth_manager.error_msg = auth_manager.error_msg, ""
         liveview = [g for g in groups if g.get("recording") == syncinfo.LIVEVIEW]
         for g in liveview:
             for c in g["cameras"]:
@@ -130,6 +141,7 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
                 "base": _base(request),
                 "state": auth_manager.state.value,
                 "error": auth_manager.error_msg,
+                "flash": flash,
                 "groups": groups,
                 "liveview_groups": liveview,
                 "own_clip_groups": [g for g in groups
@@ -138,7 +150,10 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
                 "history": _history_rows(),
                 "clip_seconds": settings.get()["clip_seconds"],
                 "live_seconds": LIVE_SECONDS,
-                "poll_interval": 30,
+                # The bridge's real cadence (fast only while an armed module
+                # finds its clips through the poll): reloading the page more
+                # often would show nothing new.
+                "poll_interval": _poll_interval(),
                 "now": int(time.time()),
             },
         )
@@ -187,22 +202,19 @@ def create_app(auth_manager: AuthManager, bridge_event: asyncio.Event) -> FastAP
         if blink and camera_name in blink.cameras:
             cam = blink.cameras[camera_name]
             async with _blink_errors("Snapshot"):
-                old_url = cam.thumbnail
-                _LOGGER.info("Snapshot %s — thumbnail before: %s", camera_name, old_url)
                 serial = cam.serial or slugify(cam.name)
                 mark_own_activity(serial)
-                ret = await cam.snap_picture()
-                mark_own_activity(serial)
-                _LOGGER.info("Snapshot %s — snap_picture() returned: %s", camera_name, ret)
-                # wait_for_command() inside snap_picture() handles command completion,
-                # but image upload to Blink CDN may still be in progress
-                await asyncio.sleep(_SNAP_WAIT)
-                # Download this camera's picture even if the thumbnail URL didn't
-                # change (BlinkCameraMini often reuses the same URL). Not
-                # force_cache: that re-downloads every camera's thumbnail and clip.
+                try:
+                    await snapshot_mod.take(cam)
+                except SnapshotError as e:
+                    _LOGGER.warning("Snapshot %s: %s", camera_name, e)
+                    auth_manager.error_msg = f"Snapshot {camera_name}: {e}"
+                    return RedirectResponse(url=f"{_base(request)}/", status_code=303)
+                finally:
+                    mark_own_activity(serial)
+                # Blink lists the new picture: download just this camera's.
                 thumbs.request(cam)
                 await blink.refresh()
-                _LOGGER.info("Snapshot %s — thumbnail after: %s", camera_name, cam.thumbnail)
                 mqtt = getattr(request.app.state, "mqtt", None)
                 if mqtt:
                     mqtt.publish_camera(cam, publish_image=True)

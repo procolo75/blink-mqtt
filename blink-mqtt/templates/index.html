@@ -158,7 +158,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
 
   <div class="topbar-right">
     {% if state == "authenticated" %}
-      <span class="refresh-info" id="refresh-label">Refresh in <span id="countdown">{{ poll_interval }}</span>s</span>
+      <span class="refresh-info" id="refresh-label" title="The page reloads after each Blink poll; reloading reads from the add-on only, not from Blink">Blink poll every {{ poll_interval }} s · page refresh in <span id="countdown">{{ poll_interval }}</span>s</span>
       <form method="post" action="{{ base }}/logout" onsubmit="showOverlay('Logging out…')">
         <button type="submit" class="btn btn-ghost btn-sm">Logout</button>
       </form>
@@ -211,7 +211,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
   <!-- ── DASHBOARD ── -->
   {% if state == "authenticated" %}
 
-  {% if error %}<div class="alert alert-err" style="margin-bottom:1rem;">{{ error }}</div>{% endif %}
+  {% if flash %}<div class="alert alert-err" style="margin-bottom:1rem;">{{ flash }}</div>{% endif %}
 
   <div class="tabs">
     <a href="#cameras" class="tab" data-tab="cameras">📷 Cameras</a>
@@ -233,6 +233,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
     <div class="card-header">
       <div>
         <span class="sync-name">{{ g.name }}</span>
+        {% if g.offline %}<span class="badge badge-motion" title="Blink reports this sync module offline: camera values below are stale">OFFLINE</span>{% endif %}
         <span class="card-title" style="margin-left:.4rem;">{{ g.cameras|length }} camera{{ "" if g.cameras|length == 1 else "s" }}</span>
         {% if g.recording %}
         <div class="sync-meta">
@@ -293,6 +294,17 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
             </span>
           </div>
           <div class="cam-body">
+            <div class="stat-row">
+              <span class="stat-label">Status</span>
+              {% if cam.offline %}
+              <span class="badge badge-motion" title="{{ cam.offline }} — values below are the last ones Blink had">OFFLINE</span>
+              {% else %}
+              <span class="badge badge-on">Online</span>
+              {% endif %}
+            </div>
+            {% if cam.offline %}
+            <div class="alert-mini">{{ cam.offline }}: battery, temperature and WiFi are stale</div>
+            {% endif %}
             <div class="stat-row" style="margin-bottom:.2rem;">
               <span class="stat-label">Serial</span>
               <code style="font-size:.68rem;color:var(--muted);word-break:break-all">{{ cam.serial }}</code>
@@ -341,7 +353,7 @@ body { background: var(--bg); color: var(--text); font-family: -apple-system, 'S
               </button>
             </form>
             <form method="post" action="{{ base }}/snapshot/{{ cam.name }}"
-                  onsubmit="showOverlay('Snapshot {{ cam.name }}… (8s)');disableBtn(this)">
+                  onsubmit="showOverlay('Snapshot {{ cam.name }}… waiting for the new picture (up to 1 min)');disableBtn(this)">
               <button type="submit" class="btn btn-ghost btn-sm" data-loading="Capturing…">
                 📷 Snapshot
               </button>

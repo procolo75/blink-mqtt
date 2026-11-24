@@ -17,6 +17,7 @@ Authentication is handled through a built-in web UI (HA Ingress). Once authentic
 - **Snapshot** camera entity per camera: the picture taken by the Snapshot button (automatic home-screen thumbnails are off by default to save data, see `auto_thumbnails`)
 - **Arm/Disarm** switch per sync module (camera devices are linked to their sync module in HA via `via_device`)
 - **Snapshot trigger** command per camera (via MQTT or web UI)
+- **Online** connectivity sensor per camera and per sync module (OFF when Blink reports the sync module or camera offline, or a Snapshot/Live View command to it failed)
 - **Motion clips over MQTT** — every new motion clip is published as MP4 on `blink/cameras/{serial}/event/clip`, also without a Blink subscription (USB local storage)
 - **Live view in the web UI** — a **Live** button on each camera card shows 10 s of Live View (MJPEG, works in the HA iOS/Android apps too), then stops by itself to save battery
 - **Live View clip recording** — for sync modules where Blink stores nothing (no USB, no subscription, e.g. Sync Module Core): the app records the clip itself from Live View, manually (HA button, MQTT, web UI) or **automatically on motion**
@@ -135,6 +136,8 @@ All topics use the `blink` prefix. State topics are **retained** unless noted ot
 | `blink/cameras/{serial}/temperature/state` | float (°C) | Ambient temperature |
 | `blink/cameras/{serial}/wifi/state` | int (dBm) | WiFi signal strength |
 | `blink/cameras/{serial}/snapshot` | JPEG bytes | Camera image (not retained) |
+| `blink/cameras/{serial}/online/state` | `ON` / `OFF` | Camera reachable (retained) |
+| `blink/sync/{nid}/online/state` | `ON` / `OFF` | Sync module online per Blink (retained) |
 | `blink/cameras/{serial}/name` | string | Camera display name (retained) |
 
 ### Motion event topics
@@ -311,8 +314,9 @@ The built-in dashboard is accessible via **Home Assistant Ingress** (no port for
 - **Record clip button** — records a Live View clip and publishes it on `event/clip`
 - **Live View settings tab** — trigger mode, motion polling interval, clip length, Alexa setup with per-camera HA scripts, history of the last 10 Live View clips (source, lead over Blink's motion stamp, result, length)
 - **Live button** — shows the camera's Live View in place of the thumbnail for **10 s** (every camera, to save battery), with a countdown and a **Close** button. MJPEG, 640 px, ~5 fps, no audio: chosen because it plays everywhere, including the HA iOS app, where a streamed MP4 does not reliably play. The first frame arrives after ~5 s (Live View startup). Not recorded and not published on MQTT — use **Record clip** for that
-- **Snapshot button** — triggers a new image capture and refreshes the thumbnail
-- **Auto-refresh** — page reloads automatically every `poll_interval` seconds when authenticated
+- **Snapshot button** — triggers a new image capture, waits until Blink lists the new picture (up to ~1 min) and shows it; if no new picture arrives it says so instead of showing the old one
+- **Online / OFFLINE badges** — on each camera and sync module; while offline, battery/temperature/WiFi are the last values Blink had
+- **Auto-refresh** — the header shows the current Blink poll cadence (`poll_interval` while an armed USB/Cloud module needs it, `idle_poll_interval` otherwise) and the page reloads at that pace; the reload reads from the app only, not from Blink
 
 The **Serial** field on each camera card contains the camera's unique identifier. This is the value to use when configuring MQTT-based integrations such as [DRADIS](https://github.com/procolo75/dradis) (`cameras/{serial}/motion`).
 
@@ -416,6 +420,8 @@ fast watch never trigger twice.
 
 | Symptom | Cause / fix |
 |---|---|
+| A camera or sync module shows **OFFLINE** | Blink reports it offline (homescreen `status`), or the last Snapshot/Live View command to it failed. The log has `Blink status 'online' -> 'offline'` or `command failed (…)`. Detected at the next full poll (30 s for an armed USB/Cloud module, `idle_poll_interval` 300 s otherwise), in about 5 s for an armed Live View module (its motion watch already reads the homescreen), at once when a command fails. It clears the same way, or at the next successful command. |
+| Snapshot says "no new picture from the camera within 30 s" | Blink accepted the command but the camera uploaded nothing new (slow wake-up, weak signal; a Mini at rest often keeps its old picture). The old picture is **not** published; press Snapshot again. |
 | A camera or a whole sync module is missing from the web UI and HA | The sync module is **off or offline**: Blink does not list its cameras. Power it on; the camera comes back at the next poll. |
 | A new app option does not show up | Options appear only after **updating** to a higher version, not after a Rebuild. For a local app: Install App → ⋮ → Check for updates. |
 | No automatic Live View clip | Check that the module chip says **Live View**, the module is **armed**, and the trigger mode is not `off`. Every `updated_at` change is logged with the decision (`Device update … — ignored (<reason>)`). |

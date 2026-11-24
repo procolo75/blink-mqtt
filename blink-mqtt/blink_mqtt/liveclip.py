@@ -26,6 +26,8 @@ import ssl
 
 from blinkpy.livestream import BlinkLiveStream
 
+from . import camstatus
+
 _LOGGER = logging.getLogger(__name__)
 
 # Extra time on top of the clip length for Live View to start and ffmpeg to exit.
@@ -150,9 +152,11 @@ async def _open_liveview(cam) -> BlinkLiveStream:
     if not server:
         _LOGGER.warning("Live View %s refused, Blink answered: %s", cam.name, resp)
         msg = resp.get("message") if isinstance(resp, dict) else None
+        camstatus.note_failure(cam, f"Live View refused: {msg or resp}")
         raise LiveViewError(msg or f"no stream server in answer: {resp}")
     if not server.startswith("immis://"):
         raise LiveViewError(f"unsupported stream protocol: {server.split(':', 1)[0]}")
+    camstatus.note_success(cam)
     _LOGGER.info("Live View %s: command %s", cam.name, resp.get("command_id"))
     return _LiveStream(cam, resp)
 

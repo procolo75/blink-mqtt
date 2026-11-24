@@ -5,6 +5,36 @@ All notable changes to this add-on are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] - 2026-11-24
+
+### Fixed
+- **An offline sync module or camera was shown as OK.** blinkpy reads a sync module's status
+  only at start-up, and when Blink reports a sync module error it skips the refresh: the
+  cameras kept their last battery "ok", temperature and WiFi. The status now comes from
+  Blink's homescreen (refreshed on every poll) for both the sync module and the camera, plus
+  any Snapshot/Live View command Blink failed in the last 15 minutes. Every status value
+  Blink sends is logged at start and on change (`Blink status 'online' -> 'offline'`).
+  Detection delay: the next full poll (`poll_interval` 30 s for an armed USB/Cloud module,
+  `idle_poll_interval` 300 s otherwise); about `motion_poll_interval` (5 s) for an armed Live
+  View module, whose motion watch already reads the homescreen — no extra request to Blink.
+- **Snapshot showed the previous picture, and the new one only on the next Snapshot.** It
+  waited a fixed 8 s and then downloaded whatever thumbnail Blink had; a slow camera had not
+  uploaded yet. Now the snap command's outcome is read from Blink and the camera's thumbnail
+  stamp is polled until it changes (up to ~1 min); only then is the picture downloaded and
+  published. If it never changes, the web UI says so and nothing is published to MQTT.
+  A command Blink fails (e.g. camera offline) marks the camera offline.
+- Errors of web UI actions (Snapshot, Record) are shown once on the dashboard, not left there.
+- **The web UI always said "Refresh in 30 s".** The figure was fixed in the page. It now shows the
+  real Blink poll cadence (`poll_interval` while an armed USB/Cloud module needs it,
+  `idle_poll_interval` otherwise) and the page reloads at that same pace. The reload reads only
+  from the add-on, never from Blink.
+
+### Added
+- **Online** connectivity sensor per camera (`blink/cameras/{serial}/online/state`) and per
+  sync module (`blink/sync/{nid}/online/state`), retained, auto-discovered in HA.
+- **OFFLINE** badges in the web UI on sync modules and cameras, with the reason; battery,
+  temperature and WiFi are flagged as stale while offline.
+
 ## [1.10.0] - 2026-11-19
 
 ### Fixed

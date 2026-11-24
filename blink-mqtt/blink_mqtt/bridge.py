@@ -4,7 +4,7 @@ from datetime import datetime
 
 from slugify import slugify
 
-from . import config, settings, syncinfo, thumbs
+from . import camstatus, config, settings, snapshot, syncinfo, thumbs
 from blinkpy import api as blink_api
 
 from .auth import AUTH_ERRORS, AuthManager
@@ -13,10 +13,6 @@ from .liveclip import (is_own_activity, looks_like_mp4, mark_own_activity,
 from .mqtt_client import MQTTClient
 
 _LOGGER = logging.getLogger(__name__)
-
-# After snap_picture() the camera still uploads the picture to Blink's CDN.
-SNAPSHOT_UPLOAD_WAIT = 8
-
 
 class Bridge:
     def __init__(self, auth_manager: AuthManager, mqtt: MQTTClient,
@@ -86,6 +82,7 @@ class Bridge:
                     home = await blink_api.http_get(self._blink, url)
                     if isinstance(home, dict) and "cameras" in home:
                         self._check_device_updates(home)
+                        self._update_online(home)
                 except AUTH_ERRORS as e:
                     if self._note_auth_error(e):
                         return
@@ -93,6 +90,31 @@ class Bridge:
                     _LOGGER.warning("Motion watch error: %s", repr(e))
                     interval = config.POLL_INTERVAL   # back off
             await asyncio.sleep(interval)
+
+    def _update_online(self, home: dict):
+        """Online/offline from the homescreen the motion watch just read.
+
+        Same endpoint and shape blinkpy stores in blink.homescreen, so it is
+        kept there: an armed Live View module going offline shows in about
+        motion_poll_interval seconds instead of at the next full poll, with no
+        extra request to Blink. MQTT is published only for what changed.
+        """
+        def states():
+            return ({c.name: camstatus.offline_reason(self._blink, c)
+                     for c in self._blink.cameras.values()},
+                    {n: camstatus.sync_offline(self._blink, s)
+                     for n, s in self._blink.sync.items()})
+
+        cams_before, syncs_before = states()
+        self._blink.homescreen = home
+        camstatus.observe(self._blink)
+        cams_after, syncs_after = states()
+        for cam in self._blink.cameras.values():
+            if cams_before[cam.name] != cams_after[cam.name]:
+                self._mqtt.publish_camera(cam, publish_image=False)
+        for name, sync in self._blink.sync.items():
+            if syncs_before[name] != syncs_after[name]:
+                self._mqtt.publish_sync(sync)
 
     def _liveview_module_armed(self) -> bool:
         return any(
@@ -202,6 +224,7 @@ class Bridge:
                 # from blinkpy's cache only if this very refresh downloaded it.
                 videos_before = {c.name: c.video_from_cache for c in self._blink.cameras.values()}
                 await self._blink.refresh()
+                camstatus.observe(self._blink)
                 for cam in self._blink.cameras.values():
                     new_url = cam.thumbnail
                     old_url = self._thumbnail_cache.get(cam.name)
@@ -360,20 +383,32 @@ class Bridge:
         _LOGGER.warning("Sync network_id=%s not found", nid)
 
     async def _trigger_snapshot(self, serial: str):
-        for cam in self._blink.cameras.values():
-            if (cam.serial or slugify(cam.name)) == serial:
-                _LOGGER.info("Snapshot: %s", cam.name)
-                mark_own_activity(serial)
-                await cam.snap_picture()
-                mark_own_activity(serial)
-                # The picture is fetched by the next poll, once the camera has
-                # uploaded it; not awaited here so commands queued behind wait not.
-                self._spawn(self._fetch_snapshot(cam))
-                return
-        _LOGGER.warning("Camera serial=%s not found", serial)
+        cam = self._camera(serial)
+        if cam is None:
+            _LOGGER.warning("Camera serial=%s not found", serial)
+            return
+        _LOGGER.info("Snapshot: %s", cam.name)
+        # In its own task: waiting for the new picture takes up to a minute and
+        # must not hold up commands queued behind it.
+        self._spawn(self._take_snapshot(cam, serial))
 
-    async def _fetch_snapshot(self, cam):
-        await asyncio.sleep(SNAPSHOT_UPLOAD_WAIT)
+    async def _take_snapshot(self, cam, serial: str):
+        mark_own_activity(serial)
+        try:
+            await snapshot.take(cam)
+        except snapshot.SnapshotError as e:
+            _LOGGER.warning("Snapshot %s: %s — no picture published", cam.name, e)
+            self._mqtt.publish_camera(cam, publish_image=False)   # online state
+            return
+        except AUTH_ERRORS as e:
+            self._note_auth_error(e)
+            return
+        except Exception as e:
+            _LOGGER.error("Snapshot %s failed: %s", cam.name, repr(e))
+            return
+        finally:
+            mark_own_activity(serial)
+        # Blink lists the new picture: the next poll downloads and publishes it.
         thumbs.request(cam)
         self._snapshot_pending.add(cam.name)
         self._poll_now.set()

@@ -5,6 +5,8 @@ import logging
 import paho.mqtt.client as mqtt
 from slugify import slugify
 
+from . import camstatus
+
 _LOGGER = logging.getLogger(__name__)
 
 _DISCOVERY = "homeassistant"
@@ -77,6 +79,7 @@ class MQTTClient:
             self._publish_camera_discovery(cam)
         for sync_name, sync in blink.sync.items():
             self._publish_sync_discovery(sync_name, sync)
+            self._publish_sync_online_discovery(sync_name, sync)
 
     def _publish_camera_discovery(self, cam):
         slug = slugify(cam.name)
@@ -103,6 +106,25 @@ class MQTTClient:
                 "payload_on": "ON",
                 "payload_off": "OFF",
                 "device_class": "motion",
+                "availability": [avail],
+                "device": dev,
+            }),
+            retain=True,
+        )
+
+        # Reachable or not: the sync module or camera reported offline, or a
+        # command failed (see camstatus.py). Battery etc. go stale while OFF.
+        self._pub(
+            f"{_DISCOVERY}/binary_sensor/blink_{slug}/online/config",
+            json.dumps({
+                "name": "Online",
+                "object_id": f"blink_{slug}_online",
+                "unique_id": f"blink_{serial}_online",
+                "state_topic": f"{base}/online/state",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "device_class": "connectivity",
+                "entity_category": "diagnostic",
                 "availability": [avail],
                 "device": dev,
             }),
@@ -224,6 +246,32 @@ class MQTTClient:
             retain=True,
         )
 
+    def _publish_sync_online_discovery(self, sync_name, sync):
+        slug = slugify(sync_name)
+        nid = str(sync.network_id)
+        self._pub(
+            # blink_sync_{nid}: a Mini's pseudo-sync has the camera's own name.
+            f"{_DISCOVERY}/binary_sensor/blink_sync_{nid}/online/config",
+            json.dumps({
+                "name": "Online",
+                "object_id": f"blink_{slug}_sync_online",
+                "unique_id": f"blink_sync_{nid}_online",
+                "state_topic": f"{_STATE}/sync/{nid}/online/state",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "device_class": "connectivity",
+                "entity_category": "diagnostic",
+                "availability": [{"topic": _AVAIL, "payload_available": "online",
+                                  "payload_not_available": "offline"}],
+                "device": {
+                    "identifiers": [f"blink_sync_{nid}"],
+                    "name": f"Blink {sync_name}",
+                    "manufacturer": "Blink",
+                },
+            }),
+            retain=True,
+        )
+
     def publish_camera(self, cam, publish_image: bool = True):
         serial = cam.serial or slugify(cam.name)
         base = f"{_STATE}/cameras/{serial}"
@@ -235,6 +283,8 @@ class MQTTClient:
         # that does not change when the sync module is armed/disarmed.
         sync_arm = getattr(cam.sync, "arm", None)
         self._pub(f"{base}/armed/state", "ON" if sync_arm is True else "OFF", retain=True)
+        offline = camstatus.offline_reason(cam.sync.blink, cam)
+        self._pub(f"{base}/online/state", "OFF" if offline else "ON", retain=True)
 
         if cam.battery is not None:
             self._pub(f"{base}/battery/state", cam.battery, retain=True)
@@ -261,6 +311,8 @@ class MQTTClient:
         nid = str(sync.network_id)
         # arm can be True/False/None — None means unknown, publish as OFF (safer)
         self._pub(f"{_STATE}/sync/{nid}/armed/state", "ON" if sync.arm is True else "OFF", retain=True)
+        offline = camstatus.sync_offline(sync.blink, sync)
+        self._pub(f"{_STATE}/sync/{nid}/online/state", "OFF" if offline else "ON", retain=True)
 
     def stop(self):
         self.set_available(False)
