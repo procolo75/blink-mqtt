@@ -12,11 +12,10 @@ import types
 from pathlib import Path
 
 # Stub the add-on's third-party imports, then load blink_mqtt as a package.
-_api = types.ModuleType("blinkpy.api")
-_blinkpy = types.ModuleType("blinkpy")
+# setdefault: another test module may have stubbed them first; share its objects.
+_blinkpy = sys.modules.setdefault("blinkpy", types.ModuleType("blinkpy"))
+_api = sys.modules.setdefault("blinkpy.api", types.ModuleType("blinkpy.api"))
 _blinkpy.api = _api
-sys.modules.setdefault("blinkpy", _blinkpy)
-sys.modules.setdefault("blinkpy.api", _api)
 _slug = types.ModuleType("slugify")
 _slug.slugify = lambda s: s.lower().replace(" ", "-")
 sys.modules.setdefault("slugify", _slug)

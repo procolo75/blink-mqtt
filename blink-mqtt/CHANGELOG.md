@@ -5,6 +5,29 @@ All notable changes to this add-on are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.4] - 2026-11-25
+
+### Fixed
+- **Clips of a Video Doorbell on a Local USB module never reached `event/clip` (Telegram).**
+  The sync module stores them under the doorbell's factory name (e.g. `VideoDoorbell13EQ`),
+  not the name it has in the app, and blinkpy silently drops every manifest clip whose name
+  is not one of the module's cameras. Before blinkpy reads the manifest, such a clip is now
+  given to its camera: same name ignoring case and punctuation, or a factory doorbell name
+  (`VideoDoorbell…` / `Doorbell…`) when the module has exactly one doorbell. Old clips are
+  not re-sent: blinkpy publishes nothing older than its last manifest read.
+- **A Video Doorbell (or Mini) on a storage-less sync module sent no clip on motion.** Blink
+  lists such a device under homescreen `doorbells` / `owls`, not `cameras`, and the motion
+  watch read only `cameras`: its `updated_at` was never checked, so no Live View clip was
+  recorded. Manual **Record clip** and `record/trigger` were not affected. All three lists
+  are now watched; devices are keyed by list and id, since ids are unique only within a list.
+
+### Added
+- **Log of the USB manifest.** The manifest blinkpy already fetched is inspected (no extra
+  request to Blink): `USB manifest <sync>: N clips, camera names […] — known to blinkpy […]
+  — renamed {…} — dropped {…}` whenever the set of names changes, and a WARNING
+  `USB clip … of '<name>' dropped by blinkpy` for every new clip still dropped. Old clips
+  found at start-up are only counted.
+
 ## [1.11.0] - 2026-11-24
 
 ### Fixed

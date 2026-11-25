@@ -4,7 +4,7 @@ from datetime import datetime
 
 from slugify import slugify
 
-from . import camstatus, config, settings, snapshot, syncinfo, thumbs
+from . import camstatus, config, manifest, settings, snapshot, syncinfo, thumbs
 from blinkpy import api as blink_api
 
 from .auth import AUTH_ERRORS, AuthManager
@@ -13,6 +13,9 @@ from .liveclip import (is_own_activity, looks_like_mp4, mark_own_activity,
 from .mqtt_client import MQTTClient
 
 _LOGGER = logging.getLogger(__name__)
+
+# blinkpy camera_type -> the homescreen list Blink puts that device in.
+_HOME_KEY = {"": "cameras", "mini": "owls", "doorbell": "doorbells"}
 
 class Bridge:
     def __init__(self, auth_manager: AuthManager, mqtt: MQTTClient,
@@ -31,7 +34,7 @@ class Bridge:
         # Homescreen `updated_at` per device id and arm state per network at
         # the previous poll — motion signal for Live View modules
         # (see _check_device_updates).
-        self._device_updated: dict[str, str] = {}
+        self._device_updated: dict[tuple[str, str], str] = {}
         self._prev_armed: dict[str, bool | None] = {}
         # Set to cut the full poll's wait short (e.g. right after arming).
         self._poll_now = asyncio.Event()
@@ -135,6 +138,8 @@ class Bridge:
           - the camera's module is in Live View mode (syncinfo),
           - the module was armed at the previous poll AND is armed now,
           - the change was not caused by our own Live View / snapshot.
+        Doorbells and Minis on such a module are read from the homescreen
+        `doorbells` / `owls` lists, cameras from `cameras`.
         Latency: up to one poll interval + Live View startup.
         """
         home = home or self._blink.homescreen or {}
@@ -143,10 +148,15 @@ class Bridge:
         for net in home.get("networks") or []:
             if isinstance(net.get("armed"), bool):
                 armed_now[str(net.get("id"))] = net["armed"]
-        cams = {str(c.camera_id): c for c in self._blink.cameras.values()}
+        # A doorbell or Mini added to a sync module is a camera of that module
+        # in blinkpy, but Blink lists it under homescreen `doorbells` / `owls`,
+        # not `cameras`: all three lists are watched. Ids are unique only
+        # within a list, so devices are keyed by (list, id).
+        cams = {(_HOME_KEY.get(c.camera_type or "", "cameras"), str(c.camera_id)): c
+                for c in self._blink.cameras.values()}
 
-        for dev in home.get("cameras") or []:
-            dev_id, new = str(dev.get("id")), dev.get("updated_at")
+        for key, dev in ((k, d) for k in _HOME_KEY.values() for d in home.get(k) or []):
+            dev_id, new = (key, str(dev.get("id"))), dev.get("updated_at")
             if not new:
                 continue
             old = self._device_updated.get(dev_id)
@@ -220,6 +230,7 @@ class Bridge:
             try:
                 if not config.AUTO_THUMBNAILS:
                     thumbs.gate(self._blink.cameras.values())
+                manifest.watch(self._blink.sync.values())
                 # Which video each camera held before this refresh: a clip is taken
                 # from blinkpy's cache only if this very refresh downloaded it.
                 videos_before = {c.name: c.video_from_cache for c in self._blink.cameras.values()}

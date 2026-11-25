@@ -242,7 +242,9 @@ between `blink`, `external` and `both`. Kept in memory, cleared on restart.
 
 **Automatic on motion** (mode `blink` or `both`). Blink lists the
 motion of such a module nowhere (no clip, `/events/network` is deprecated), but
-it bumps the camera's homescreen `updated_at` at every motion notification. It
+it bumps the camera's homescreen `updated_at` at every motion notification
+(cameras, and doorbells / Minis added to the module, which Blink lists under
+`doorbells` / `owls`). It
 also bumps it on arm/disarm and when the app wakes the camera, so a change
 counts as motion only if the module is in **Live View** mode, was armed at the
 previous poll and still is, and the change is not within 20 s of the app's
@@ -425,6 +427,7 @@ fast watch never trigger twice.
 | A camera or a whole sync module is missing from the web UI and HA | The sync module is **off or offline**: Blink does not list its cameras. Power it on; the camera comes back at the next poll. |
 | A new app option does not show up | Options appear only after **updating** to a higher version, not after a Rebuild. For a local app: Install App → ⋮ → Check for updates. |
 | No automatic Live View clip | Check that the module chip says **Live View**, the module is **armed**, and the trigger mode is not `off`. Every `updated_at` change is logged with the decision (`Device update … — ignored (<reason>)`). |
+| A camera's clip is on the USB stick but never reaches `event/clip` | The sync module may store clips under another name than the app's (a doorbell's factory name, e.g. `VideoDoorbell13EQ`, or another letter case); blinkpy drops them. The app gives them to the camera: same name ignoring case, or a factory doorbell name when the module has one doorbell. The log line `USB manifest <sync>: … — renamed {…} — dropped {…}` shows what happened; `USB clip … dropped by blinkpy` lists what is still lost (e.g. two doorbells on one module). After renaming or swapping a camera, restart the app: blinkpy reads the camera list only at start-up. |
 | A module with a Blink plan shows **Live View** | Cloud is inferred from recent clips; with no motion in the last hour it falls back to Live View. |
 | A Live View module suddenly shows **Cloud** | A Blink plan (often a trial started by the Alexa skill) is active. Cancel it in the Blink app if unwanted and restart blink-mqtt. |
 | `Record failed: An app update is required` | Blink changed the Live View endpoint again; open an issue with the blink-mqtt log. |
